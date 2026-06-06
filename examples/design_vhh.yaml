@@ -1,0 +1,70 @@
+input:           # directory of .json target schemas
+output: ./out    # directory for outputs (created if absent)
+msa_dir:
+
+# Which target chains to include (comma-separated). Leave empty to use all protein chains.
+target_chains:
+
+# Optional: filter to specific targets by name (stem of .json filename).
+# targets: [TargetA, TargetB]
+
+# VHH binder spec.
+# Framework: caplacizumab (PDB 7eow chain B). Framework string starts at template
+# residue 2 (E) — the leading Met starter from expression constructs is dropped
+# so the framework matches the template residue-by-residue.
+# CDR boundaries match BoltzGen's nanobody_scaffolds/7eow.yaml (26..34, 52..59, 98..118).
+# Original caplacizumab CDR sequences: SGRTFSYNP / ISRTGGST / AAAGVRAEDGRVRTLPSEYTF.
+# Each <cdrhN> tag gets replaced by random-length X run per call (sampled from cdr_lengths).
+binder:
+  chain: B
+  type: vhh
+  framework: "EVQLVESGGGLVQPGGSLRLSCAA<cdrh1>MGWFRQAPGKGRELVAA<cdrh2>YYPDSVEGRFTISRDNAKRMVYLQMNSLRAEDTAVYYC<cdrh3>WGQGTQVTVSS"
+  cdr_lengths:
+    cdrh1: [5, 7]    # CDR1: 5-7 residues
+    cdrh2: [7, 12]   # CDR2: 7-12 residues
+    cdrh3: [9, 15]   # CDR3: 9-15 residues (full extreme is 2-30+)
+  # Flag CDR tokens with is_epitope so the model conditions on them as the paratope.
+  paratope_from_cdrs: true
+  # Framework structure conditioning — feeds Cα pair distances of the framework
+  # residues into the trunk via distogram_emb. Strong geometric prior on the VHH
+  # fold; CDR–anything pairs stay unconditioned. Comment out to disable.
+  framework_template:
+    path: examples/templates/7eow.cif
+    chain: B
+
+# Optional: condition backbone diffusion on Cα pairwise distances from a target template.
+# The refold confidence JSON will include target_template_lddt when set.
+# target_template:
+#   path: targets/my_target.cif
+#   chain: A
+#   subsample_frac: 0.01   # fraction of resolved positions to condition on (default: 1.0)
+
+# Optional epitope flagging on the target. Leave residues empty to disable.
+epitope_chain: A
+epitope_residues: []
+
+# Cofolding inference. Each item produces one backbone via 1 trunk + 1 diffusion sample.
+# Refold samples per design are hardcoded to 5 in diffusion.py.
+recycling_steps: 4
+num_backbones: 10000
+diffusion_steps: 200
+skip_existing: true
+save_traj: false
+save_distogram: false
+save_full_confidence: false
+
+# Sequence redesign of CDR positions only — framework stays fixed.
+inverse_folder:
+  type: solublempnn
+  num_seqs: 1
+
+diffusion:
+  sigma_min: 0.0004
+  sigma_max: 160.0
+  sigma_data: 16.0
+  rho: 7
+  gamma_0: 0.8
+  gamma_min: 1.0
+  noise_scale: 1.003
+  step_scale: 1.5
+  edm_churn: true

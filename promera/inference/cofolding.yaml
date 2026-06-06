@@ -1,0 +1,23 @@
+input:
+msa_dir:
+recycling_steps: 4
+diffusion_samples: 5
+diffusion_steps: 200
+num_seeds: 1
+skip_existing: true
+assert_msa: true
+save_traj: false
+save_distogram: false
+save_full_confidence: false
+output: .
+
+diffusion:
+    sigma_min: 0.0004
+    sigma_max: 160.0
+    sigma_data: 16.0
+    edm_churn: true
+    rho: 7
+    gamma_0: 0.8
+    gamma_min: 1.0
+    noise_scale: 1.003
+    step_scale: 1.5

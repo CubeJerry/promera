@@ -1,0 +1,12 @@
+{
+  "A1": {
+    "type": "protein",
+    "sequence": "PNFSGNWKIIRSENFEELLKVLGVNVMLRKIAVAAASKPAVEIKQEGDTFYIKTSTTVRTTEINFKVGEEFEEQTVDGRPCKSLVKWESENKMVCEQKLLKGEGPKTSWTRELTNDGELILTMTADDVVCTRVYVRE",
+    "entity_id": 1
+  },
+  "B1": {
+    "type": "ligand",
+    "sequence": "REA",
+    "entity_id": 2
+  }
+}

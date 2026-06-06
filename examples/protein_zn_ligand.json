@@ -1,0 +1,17 @@
+{
+  "A1": {
+    "type": "protein",
+    "sequence": "IIGGTESKPHSRPYMAYLEIVTSNGPSKFCGGFLIRRNFVLTAAHCAGRSITVTLGAHNITEEEDTWQKLEVIKQFRHPKYNTSTLHHDIMLLKLKEKASLTLAVGTLPFPSQKNFVPPGRMCRVAGWGRTGVLKPGSDTLQEVKLRLMDPQACSHFRDFDHNLQLCVGNPRKTKSAFKGDSGGPLLCAGVAQGIVSYGRSDAKPPAVFTRISHYRPWINQILQAN",
+    "entity_id": 1
+  },
+  "B1": {
+    "type": "ligand",
+    "sequence": "ZN",
+    "entity_id": 2
+  },
+  "C1": {
+    "type": "ligand",
+    "sequence": "A1AOT",
+    "entity_id": 3
+  }
+}

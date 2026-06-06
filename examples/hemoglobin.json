@@ -1,0 +1,42 @@
+{
+  "A1": {
+    "type": "protein",
+    "sequence": "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR",
+    "entity_id": 1
+  },
+  "B1": {
+    "type": "protein",
+    "sequence": "VHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+    "entity_id": 2
+  },
+  "C1": {
+    "type": "protein",
+    "sequence": "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR",
+    "entity_id": 1
+  },
+  "D1": {
+    "type": "protein",
+    "sequence": "VHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+    "entity_id": 2
+  },
+  "E1": {
+    "type": "ligand",
+    "sequence": "HEM",
+    "entity_id": 3
+  },
+  "F1": {
+    "type": "ligand",
+    "sequence": "HEM",
+    "entity_id": 3
+  },
+  "G1": {
+    "type": "ligand",
+    "sequence": "HEM",
+    "entity_id": 3
+  },
+  "H1": {
+    "type": "ligand",
+    "sequence": "HEM",
+    "entity_id": 3
+  }
+}

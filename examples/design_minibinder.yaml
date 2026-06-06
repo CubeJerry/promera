@@ -1,0 +1,52 @@
+input:           # directory of .json target schemas
+output: ./out    # directory for outputs (created if absent)
+msa_dir:
+
+# Which target chains to include (comma-separated). Leave empty to use all protein chains.
+target_chains:
+
+# Optional: filter to specific targets by name (stem of .json filename).
+# targets: [TargetA, TargetB]
+
+# Binder chain spec.
+binder:
+  chain: B
+  type: protein         # protein | vhh
+  length: [40, 120]     # used when type=protein. int → fixed length; [min, max] → sampled per backbone
+
+# Epitope flagging on the target.
+epitope_chain: A
+epitope_residues: []   # 1-based residue numbers in the schema's target chain (override per target)
+
+# Optional: condition backbone diffusion on Cα pairwise distances from a template.
+# The refold confidence JSON will include target_template_lddt when set.
+# target_template:
+#   path: targets/my_target.cif
+#   chain: A
+#   subsample_frac: 1.0   # fraction of resolved positions to condition on
+
+# Cofolding inference.
+recycling_steps: 4
+num_backbones: 10000
+diffusion_steps: 200
+skip_existing: true
+save_traj: false
+save_distogram: false
+save_full_confidence: false
+
+# Sequence redesign of the binder chain after diffusion.
+inverse_folder:
+  type: solublempnn    # proteinmpnn | solublempnn | ligandmpnn | abmpnn | none
+  num_seqs: 1          # sequences per backbone
+
+# Diffusion schedule.
+diffusion:
+  sigma_min: 0.0004
+  sigma_max: 160.0
+  sigma_data: 16.0
+  rho: 7
+  gamma_0: 0.8
+  gamma_min: 1.0
+  noise_scale: 1.003
+  step_scale: 1.0
+  edm_churn: true
