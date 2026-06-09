@@ -479,15 +479,15 @@ def run_lmpnn_redesign(
         os.path.join(mp, "abmpnn.pt"),
     )
 
-    if requested_model_type in {"proteinmpnn", "protein"}:
+    if requested_model_type in {"proteinmpnn"}:
         lmpnn_model_type = "protein_mpnn"
         checkpoint_protein_mpnn = protein_mpnn_ckpt
 
-    elif requested_model_type in {"solublempnn", "soluble"}:
+    elif requested_model_type in {"solublempnn"}:
         lmpnn_model_type = "soluble_mpnn"
         checkpoint_protein_mpnn = protein_mpnn_ckpt
 
-    elif requested_model_type in {"abmpnn", "antibodympnn", "antibody"}:
+    elif requested_model_type in {"abmpnn"}:
         lmpnn_model_type = "protein_mpnn"
         checkpoint_protein_mpnn = abmpnn_ckpt
 
@@ -499,7 +499,7 @@ def run_lmpnn_redesign(
                 "  export ABMPNN_CHECKPOINT=/path/to/abmpnn.pt"
             )
 
-    elif requested_model_type in {"ligandmpnn", "ligand"}:
+    elif requested_model_type in {"ligandmpnn"}:
         lmpnn_model_type = "ligand_mpnn"
         checkpoint_protein_mpnn = protein_mpnn_ckpt
 
@@ -508,15 +508,6 @@ def run_lmpnn_redesign(
             f"Unknown inverse_folder/model_type: {model_type!r}. "
             "Expected one of: proteinmpnn, solublempnn, ligandmpnn, abmpnn."
         )
-
-    # print(
-    #     "[MPNN] "
-    #     f"requested_type={model_type} "
-    #     f"resolved_model_type={lmpnn_model_type} "
-    #     f"checkpoint_protein_mpnn={checkpoint_protein_mpnn} "
-    #     f"checkpoint_soluble_mpnn={soluble_mpnn_ckpt}"
-    # )
-
 
     config = SimpleNamespace(
         model_type=lmpnn_model_type,

@@ -46,7 +46,6 @@ from .utils import (
     run_lmpnn_redesign,
 )
 
-
 _INPUT_EXT = ".json"
 
 _MPNN_VARIANTS = {
