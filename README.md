@@ -68,7 +68,7 @@ To run custom inference, pass any `--task <module.path.TaskClass>` and associate
 
 ## Binder design
 
-*De novo* binder design is built into Promera via the `promera.inference.Design` task. It supports both free minibinder design and VHH nanobody design with framework conditioning.
+De novo binder design is built into Promera via the `promera.inference.Design` task. It supports both free minibinder design and VHH nanobody design with framework conditioning.
 
 ### Setup: LigandMPNN
 
@@ -79,8 +79,6 @@ git clone https://github.com/dauparas/LigandMPNN ../LigandMPNN
 cd ../LigandMPNN && bash get_model_params.sh ./model_params
 export LIGANDMPNN_DIR=$(pwd)
 ```
-
-Promera supports ProteinMPNN, SolubleMPNN, LigandMPNN, and AbMPNN-style inverse folding through the LigandMPNN runner.
 
 ### Optional: AbMPNN for VHH design
 
@@ -129,7 +127,7 @@ python -m promera \
     input=examples/targets/ output=out/
 ```
 
-Copy and edit [`examples/design_minibinder.yaml`](examples/design_minibinder.yaml) or [`examples/design_vhh.yaml`](examples/design_vhh.yaml) for your design setting. To use AbMPNN, copy the VHH design config and set `inverse_folder.type: abmpnn`.
+Copy and edit [`examples/design_minibinder.yaml`](examples/design_minibinder.yaml) or [`examples/design_vhh.yaml`](examples/design_vhh.yaml) for your design setting.
 
 ---
 
