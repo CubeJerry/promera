@@ -7,7 +7,6 @@ import torch
 from scipy.special import softmax
 from tinyprot.structure import Structure
 
-
 def tm_function(d, Nres):
     d0 = 1.24 * (max(Nres, 19) - 15) ** (1 / 3) - 1.8
     return 1 / (1 + (d / d0) ** 2)
@@ -418,13 +417,11 @@ def _get_interface_indices(
             interface.append(i)
     return interface
 
-
 def run_lmpnn_redesign(
     pdb_path, binder_chain, lmpnn_dir, num_seqs=8, model_type=None, fixed_residues=None
 ):
-    """Run ProteinMPNN/SolubleMPNN/LigandMPNN redesign on a binder+target PDB."""
+    """Run ProteinMPNN/SolubleMPNN/LigandMPNN/AbMPNN redesign on a binder+target PDB."""
     os.makedirs(lmpnn_dir, exist_ok=True)
-
     base = os.path.splitext(os.path.basename(pdb_path))[0]
     sanitized_pdb = os.path.join(lmpnn_dir, f"{base}_sanitized.pdb")
     with open(pdb_path) as fin, open(sanitized_pdb, "w") as fout:
@@ -436,9 +433,13 @@ def run_lmpnn_redesign(
 
     if model_type is None:
         model_type = _detect_model_type(pdb_path)
+    
+    requested_model_type = str(model_type).lower().replace("-", "").replace("_", "")
+    is_ligand_mpnn = requested_model_type in {"ligandmpnn", "ligand"}
+    
     atoms = _parse_pdb_atoms(pdb_path)
 
-    pdb_chains = sorted(set(a["chain"] for a in atoms))
+    pdb_chains       = sorted(set(a["chain"] for a in atoms))
     binder_fasta_idx = pdb_chains.index(binder_chain)
 
     if fixed_residues is None:
@@ -446,7 +447,7 @@ def run_lmpnn_redesign(
             pdb_path,
             binder_chain,
             cutoff=6.0,
-            non_protein_target=(model_type == "ligand_mpnn"),
+            non_protein_target=is_ligand_mpnn,
         )
         binder_resnums = sorted(
             set(
@@ -467,13 +468,52 @@ def run_lmpnn_redesign(
         from run import main as lmpnn_main
     except ImportError as e:
         raise ImportError(f"Could not import LigandMPNN from {_LMPNN_DIR}.\n{e}")
-
+    
     mp = os.path.join(_LMPNN_DIR, "model_params")
+    protein_mpnn_ckpt = os.path.join(mp, "proteinmpnn_v_48_020.pt")
+    soluble_mpnn_ckpt = os.path.join(mp, "solublempnn_v_48_020.pt")
+    ligand_mpnn_ckpt = os.path.join(mp, "ligandmpnn_v_32_010_25.pt")
+
+    abmpnn_ckpt = os.environ.get(
+        "ABMPNN_CHECKPOINT",
+        os.path.join(mp, "abmpnn.pt"),
+    )
+
+    if requested_model_type in {"proteinmpnn"}:
+        lmpnn_model_type = "protein_mpnn"
+        checkpoint_protein_mpnn = protein_mpnn_ckpt
+
+    elif requested_model_type in {"solublempnn"}:
+        lmpnn_model_type = "soluble_mpnn"
+        checkpoint_protein_mpnn = protein_mpnn_ckpt
+
+    elif requested_model_type in {"abmpnn"}:
+        lmpnn_model_type = "protein_mpnn"
+        checkpoint_protein_mpnn = abmpnn_ckpt
+
+        if not os.path.exists(checkpoint_protein_mpnn):
+            raise FileNotFoundError(
+                "AbMPNN checkpoint not found. Expected either:\n"
+                f"  {os.path.join(mp, 'abmpnn.pt')}\n"
+                "or set:\n"
+                "  export ABMPNN_CHECKPOINT=/path/to/abmpnn.pt"
+            )
+
+    elif requested_model_type in {"ligandmpnn"}:
+        lmpnn_model_type = "ligand_mpnn"
+        checkpoint_protein_mpnn = protein_mpnn_ckpt
+
+    else:
+        raise ValueError(
+            f"Unknown inverse_folder/model_type: {model_type!r}. "
+            "Expected one of: proteinmpnn, solublempnn, ligandmpnn, abmpnn."
+        )
+
     config = SimpleNamespace(
-        model_type=model_type,
-        checkpoint_protein_mpnn=os.path.join(mp, "proteinmpnn_v_48_020.pt"),
-        checkpoint_ligand_mpnn=os.path.join(mp, "ligandmpnn_v_32_010_25.pt"),
-        checkpoint_soluble_mpnn=os.path.join(mp, "solublempnn_v_48_020.pt"),
+        model_type=lmpnn_model_type,
+        checkpoint_protein_mpnn=checkpoint_protein_mpnn,
+        checkpoint_ligand_mpnn=ligand_mpnn_ckpt,
+        checkpoint_soluble_mpnn=soluble_mpnn_ckpt,
         pdb_path=pdb_path,
         pdb_path_multi="",
         fixed_residues=fixed_tokens,
@@ -541,7 +581,6 @@ def run_lmpnn_redesign(
                 if binder_fasta_idx < len(parts):
                     seqs.append(parts[binder_fasta_idx])
     return seqs[1:]
-
 
 from tinyprot.geometry import get_contact_mask, compute_rmsd
 from tinyprot.metrics import dockQ as _tp_dockq, LDDT as _tp_lddt

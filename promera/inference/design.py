@@ -6,7 +6,7 @@ Given a target schema (.json), generate a binder by:
   2. (Optional) Flagging epitope or paratope residues via feats["is_epitope"].
   3. Running the cofolding pass (pairformer → diffusion → confidence).
   4. (Optional) Inverse-folding the binder backbone with LigandMPNN /
-     ProteinMPNN / SolubleMPNN and re-folding each redesigned sequence.
+     ProteinMPNN / SolubleMPNN / AbMPNN and re-folding each redesigned sequence.
 
 Run:
     python -m promera \\
@@ -46,15 +46,14 @@ from .utils import (
     run_lmpnn_redesign,
 )
 
-
 _INPUT_EXT = ".json"
 
 _MPNN_VARIANTS = {
     "proteinmpnn": "protein_mpnn",
     "solublempnn": "soluble_mpnn",
     "ligandmpnn": "ligand_mpnn",
+    "abmpnn": "ab_mpnn"
 }
-
 
 def _log(msg):
     import torch.distributed as dist
@@ -378,8 +377,9 @@ class Design:
             target_chains=cfg.target_chains or None,
             rng=rng,
         )
-        struct = Structure.from_schema(schema)
+        struct = Structure.from_schema(schema)        
         msas = load_msa_from_dir(cfg.msa_dir, struct.chains)
+        
         pairing = construct_paired_msa(msas)
         feats = AF3Featurizer(struct, msas, pairing).featurize(compute_frames=True)
         feats = finalize_feats(feats, struct, name, seed_idx=b_idx)
@@ -481,8 +481,9 @@ class Design:
         schema = struct.to_schema()
         schema[design_chain] = {"type": "protein", "sequence": design_seq}
         struct_new = Structure.from_schema(schema)
-
+        
         msas = load_msa_from_dir(self.cfg.msa_dir, struct_new.chains)
+        
         pairing = construct_paired_msa(msas)
         feats = AF3Featurizer(struct_new, msas, pairing).featurize(compute_frames=True)
         feats = finalize_feats(feats, struct_new, "refold", seed_idx=0)
