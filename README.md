@@ -68,7 +68,7 @@ To run custom inference, pass any `--task <module.path.TaskClass>` and associate
 
 ## Binder design
 
-De novo binder design is built into Promera via the `promera.inference.Design` task. It supports both free minibinder design and VHH nanobody design with framework conditioning.
+*De novo* binder design is built into Promera via the `promera.inference.Design` task. It supports both free minibinder design and VHH nanobody design with framework conditioning.
 
 ### Setup: LigandMPNN
 
@@ -80,6 +80,31 @@ cd ../LigandMPNN && bash get_model_params.sh ./model_params
 export LIGANDMPNN_DIR=$(pwd)
 ```
 
+Promera supports ProteinMPNN, SolubleMPNN, LigandMPNN, and AbMPNN-style inverse folding through the LigandMPNN runner.
+
+### Optional: AbMPNN for VHH design
+
+For antibody/nanobody inverse folding, Promera can use AbMPNN weights. Download the AbMPNN checkpoint:
+
+```bash
+wget "https://zenodo.org/records/8164693/files/abmpnn.pt?download=1" \
+    -O "$LIGANDMPNN_DIR/model_params/abmpnn.pt"
+```
+
+Then set:
+
+```bash
+export ABMPNN_CHECKPOINT="$LIGANDMPNN_DIR/model_params/abmpnn.pt"
+```
+
+To use AbMPNN in a design workflow, set the inverse folding type in your design YAML:
+
+```yaml
+inverse_folder:
+  type: abmpnn
+  num_seqs: 1
+```
+
 ### Running design
 
 1. Prepare target schemas; see [`examples/targets/`](examples/targets/) for examples.
@@ -87,13 +112,16 @@ export LIGANDMPNN_DIR=$(pwd)
 2. Fetch MSAs as in structure prediction.
 
 3. Run backbone diffusion + sequence redesign:
+
 ```bash
 # Minibinder design
 python -m promera \
     --task promera.inference.Design \
     --task_config examples/design_minibinder.yaml \
     input=examples/targets/ output=out/
+```
 
+```bash
 # VHH nanobody design
 python -m promera \
     --task promera.inference.Design \
@@ -101,7 +129,7 @@ python -m promera \
     input=examples/targets/ output=out/
 ```
 
-Copy and edit [`examples/design_minibinder.yaml`](examples/design_minibinder.yaml) or [`examples/design_vhh.yaml`](examples/design_vhh.yaml) for your design setting.
+Copy and edit [`examples/design_minibinder.yaml`](examples/design_minibinder.yaml) or [`examples/design_vhh.yaml`](examples/design_vhh.yaml) for your design setting. To use AbMPNN, copy the VHH design config and set `inverse_folder.type: abmpnn`.
 
 ---
 
