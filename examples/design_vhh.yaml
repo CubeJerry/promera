@@ -28,9 +28,10 @@ binder:
   # Framework structure conditioning — feeds Cα pair distances of the framework
   # residues into the trunk via distogram_emb. Strong geometric prior on the VHH
   # fold; CDR–anything pairs stay unconditioned. Comment out to disable.
-  framework_template:
-    path: examples/templates/7eow.cif
-    chain: B
+  # USE WITH CAUTION - we find that providing this leads to strange behavior.
+  # framework_template:
+  #   path: examples/templates/7eow.cif
+  #   chain: B
 
 # Optional: condition backbone diffusion on Cα pairwise distances from a target template.
 # The refold confidence JSON will include target_template_lddt when set.
