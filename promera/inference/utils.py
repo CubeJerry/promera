@@ -247,45 +247,73 @@ def extract_template_chain_sequence_and_ca(chain):
 
 
 def align_schema_to_template(schema_seq: str, template_seq: str):
-    """Globally align schema_seq to template_seq and map schema positions to template positions.
+    """Align schema_seq to a possibly longer template_seq.
 
     Returns (mapping, stats), where mapping is {schema_idx: template_idx}.
-    Terminal gaps allow cropped schemas to align to longer full templates without
-    shifting residue geometry by simple positional index.
+    Exact subsequences are mapped directly. Otherwise, use a semi-global
+    alignment with free leading/trailing template gaps so cropped schema targets
+    align to their true region within full-length CIF chains. Internal gaps are
+    retained, which lets unmodelled template residues become holes rather than
+    shifting downstream coordinates.
     """
     n, m = len(schema_seq), len(template_seq)
     if n == 0 or m == 0:
         return {}, {"identity": 0.0, "coverage": 0.0, "mapped": 0, "matches": 0}
+
+    start = template_seq.find(schema_seq)
+    if start != -1:
+        mapping = {i: start + i for i in range(n)}
+        return mapping, {
+            "identity": 1.0,
+            "coverage": 1.0,
+            "mapped": int(n),
+            "matches": int(n),
+        }
+
     gap, match, mismatch = -2, 2, -1
     dp = np.zeros((n + 1, m + 1), dtype=np.int32)
     ptr = np.zeros((n + 1, m + 1), dtype=np.int8)
+
+    # Schema residues cannot be skipped for free, but leading template residues
+    # can be skipped because the schema may be a cropped domain/antigen.
     for i in range(1, n + 1):
-        dp[i, 0] = dp[i - 1, 0] + gap; ptr[i, 0] = 1
+        dp[i, 0] = dp[i - 1, 0] + gap
+        ptr[i, 0] = 1
     for j in range(1, m + 1):
-        dp[0, j] = dp[0, j - 1] + gap; ptr[0, j] = 2
+        dp[0, j] = 0
+        ptr[0, j] = 2
+
     for i in range(1, n + 1):
         qi = schema_seq[i - 1]
         for j in range(1, m + 1):
-            diag = dp[i - 1, j - 1] + (match if qi == template_seq[j - 1] and qi != "X" else mismatch)
-            up = dp[i - 1, j] + gap
-            left = dp[i, j - 1] + gap
+            tj = template_seq[j - 1]
+            residue_score = match if qi == tj and qi != "X" else mismatch
+            diag = dp[i - 1, j - 1] + residue_score
+            up = dp[i - 1, j] + gap      # template gap / missing template residue
+            left = dp[i, j - 1] + gap    # schema gap / extra template residue
             best = max(diag, up, left)
             dp[i, j] = best
             ptr[i, j] = 0 if best == diag else (1 if best == up else 2)
+
+    # Free trailing template residues: finish at the best endpoint in the final
+    # schema row, rather than forcing alignment through template_seq[-1].
+    j = int(np.argmax(dp[n, :]))
+    i = n
     mapping = {}
     matches = 0
-    i, j = n, m
-    while i > 0 or j > 0:
-        move = ptr[i, j]
-        if i > 0 and j > 0 and move == 0:
-            i -= 1; j -= 1
+    while i > 0:
+        move = ptr[i, j] if j >= 0 else 1
+        if j > 0 and move == 0:
+            i -= 1
+            j -= 1
             mapping[i] = j
             if schema_seq[i] == template_seq[j] and schema_seq[i] != "X":
                 matches += 1
-        elif i > 0 and (j == 0 or move == 1):
+        elif move == 1 or j == 0:
             i -= 1
         else:
             j -= 1
+
     mapped = len(mapping)
     stats = {
         "identity": float(matches / mapped) if mapped else 0.0,
