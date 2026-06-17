@@ -692,10 +692,14 @@ def _strip_to_bb(struct):
 
 def compute_dockq(ref_struct, pred_struct):
     """Per-pair DockQ on backbone atoms only so UNK paratope residues in the
-    diffusion backbone match the refold's standard residues at the atom level."""
+    diffusion backbone match the refold's standard residues at the atom level.
+
+    Uses tinyprot dockQ's bb_only mode, which widens the contact/interface
+    thresholds (8 Å / 13 Å) for backbone-only atoms so the interface contact
+    mask doesn't collapse to empty."""
     ref_bb = _strip_to_bb(ref_struct)
     pred_bb = _strip_to_bb(pred_struct)
-    result = _tp_dockq(ref_bb, pred_bb, exclude_nonstd=False)
+    result = _tp_dockq(ref_bb, pred_bb, exclude_nonstd=False, bb_only=True)
     return {
         f"{a}_{b}": {k: float(v) for k, v in scores.items()}
         for (a, b), scores in result.items()
