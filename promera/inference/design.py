@@ -42,6 +42,10 @@ from .utils import (
     compute_interface_contacts,
     compute_self_consistency_rmsd,
     compute_target_lddt,
+    extract_schema_target_sequence,
+    extract_template_chain_sequence_and_ca,
+    align_schema_to_template,
+    validate_alignment_or_raise,
     finalize_feats,
     msa_summary,
     run_lmpnn_redesign,
@@ -262,6 +266,8 @@ def _compute_target_distogram(
     subsample_frac=1.0,
     seed=0,
     pinned_indices=None,
+    min_identity=0.8,
+    min_coverage=0.5,
 ):
     """Build (distogram_emb, distogram_mask) for target chain conditioning.
 
@@ -285,15 +291,23 @@ def _compute_target_distogram(
         chain_offset += len(schema[key]["sequence"])
     chain_len = len(schema[schema_chain_id]["sequence"])
 
+    schema_seq = extract_schema_target_sequence(schema, schema_chain_id)
+    template_seq, template_ca, template_ca_mask = extract_template_chain_sequence_and_ca(chain)
+    mapping, stats = align_schema_to_template(schema_seq, template_seq)
+    validate_alignment_or_raise(
+        stats,
+        min_identity=min_identity,
+        min_coverage=min_coverage,
+    )
+
     template_coords = np.zeros((n_tokens, 3), dtype=np.float32)
     has_template = np.zeros(n_tokens, dtype=bool)
-    for i in range(min(len(chain.rname), chain_len)):
-        anames = [str(a) for a in chain.aname[i]]
-        if "CA" in anames:
-            ca_j = anames.index("CA")
-            if chain.mask[i, ca_j]:
-                template_coords[chain_offset + i] = chain.coords[i, ca_j]
-                has_template[chain_offset + i] = True
+    for schema_i, template_i in mapping.items():
+        if schema_i >= chain_len or template_i >= len(template_ca):
+            continue
+        if template_ca_mask[template_i]:
+            template_coords[chain_offset + schema_i] = template_ca[template_i]
+            has_template[chain_offset + schema_i] = True
 
     if subsample_frac < 1.0:
         pinned_set = set(pinned_indices or [])
@@ -440,22 +454,35 @@ class Design:
             chain_id = getattr(target_tmpl, "chain", "A")
             subsample_frac = getattr(target_tmpl, "subsample_frac", 1.0)
             n_tokens = len(feats["restype"])
-            disto_emb_t, disto_mask_t = _compute_target_distogram(
-                target_tmpl.path,
-                chain_id,
-                schema,
-                chain_id,
-                n_tokens,
-                subsample_frac=subsample_frac,
-                seed=b_idx,
-                pinned_indices=epitope_idx,
-            )
-            if "distogram_mask" in feats:
-                feats["distogram_emb"] = feats["distogram_emb"] + disto_emb_t
-                feats["distogram_mask"] = feats["distogram_mask"] | disto_mask_t
-            else:
-                feats["distogram_emb"] = disto_emb_t
-                feats["distogram_mask"] = disto_mask_t
+            min_identity = getattr(target_tmpl, "min_identity", 0.8)
+            min_coverage = getattr(target_tmpl, "min_coverage", 0.5)
+            on_failure = getattr(target_tmpl, "on_alignment_failure", "disable_template")
+            try:
+                disto_emb_t, disto_mask_t = _compute_target_distogram(
+                    target_tmpl.path,
+                    chain_id,
+                    schema,
+                    chain_id,
+                    n_tokens,
+                    subsample_frac=subsample_frac,
+                    seed=b_idx,
+                    pinned_indices=epitope_idx,
+                    min_identity=min_identity,
+                    min_coverage=min_coverage,
+                )
+            except ValueError as e:
+                if on_failure == "error":
+                    raise
+                _log(f"{name} b{b_idx}: disabling target_template: {e}")
+                disto_emb_t = np.zeros((n_tokens, n_tokens), dtype=np.int64)
+                disto_mask_t = np.zeros((n_tokens, n_tokens), dtype=bool)
+            if disto_mask_t.any():
+                if "distogram_mask" in feats:
+                    feats["distogram_emb"] = feats["distogram_emb"] + disto_emb_t
+                    feats["distogram_mask"] = feats["distogram_mask"] | disto_mask_t
+                else:
+                    feats["distogram_emb"] = disto_emb_t
+                    feats["distogram_mask"] = disto_mask_t
             target_template_tokens = int(disto_mask_t.any(-1).sum())
 
         binder_len = len(schema[cfg.binder.chain]["sequence"])
@@ -737,11 +764,19 @@ class Design:
                     )
                     conf["scDockQ"] = compute_dockq(backbone_struct, refold_struct)
                     if self._target_template_chain is not None:
+                        target_tmpl = getattr(cfg, "target_template", None)
                         conf["target_template_lddt"] = compute_target_lddt(
                             self._target_template_chain,
                             refold_struct,
                             self._target_template_chain_id,
                             epitope_positions=epitope_positions,
+                            min_identity=getattr(target_tmpl, "min_identity", 0.8),
+                            min_coverage=getattr(target_tmpl, "min_coverage", 0.5),
+                            on_alignment_failure=getattr(
+                                target_tmpl,
+                                "on_alignment_failure",
+                                "disable_template",
+                            ),
                         )
                     with open(
                         f"{refold_dir}/{design_id}_refold{r}_confidence.json", "w"

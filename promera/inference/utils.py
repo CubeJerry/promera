@@ -218,6 +218,122 @@ _AA3TO1 = {
 }
 
 
+
+
+def extract_schema_target_sequence(schema: dict, chain_id: str) -> str:
+    """Return the design-schema sequence for a target chain."""
+    if chain_id not in schema:
+        raise ValueError(f"chain {chain_id!r} not in schema; available: {[k for k in schema if k != 'connections']}")
+    return str(schema[chain_id]["sequence"])
+
+
+def extract_template_chain_sequence_and_ca(chain):
+    """Return (sequence, ca_coords, ca_mask) for a tinyprot template chain."""
+    seq = []
+    ca_coords = []
+    ca_mask = []
+    for i in range(len(chain.rname)):
+        seq.append(_AA3TO1.get(str(chain.rname[i]), "X"))
+        anames = [str(a) for a in chain.aname[i]]
+        if "CA" in anames:
+            ca_j = anames.index("CA")
+            has_ca = bool(chain.mask[i, ca_j])
+            ca_coords.append(np.asarray(chain.coords[i, ca_j], dtype=np.float32))
+            ca_mask.append(has_ca)
+        else:
+            ca_coords.append(np.zeros(3, dtype=np.float32))
+            ca_mask.append(False)
+    return "".join(seq), ca_coords, np.asarray(ca_mask, dtype=bool)
+
+
+def align_schema_to_template(schema_seq: str, template_seq: str):
+    """Align schema_seq to a possibly longer template_seq.
+
+    Returns (mapping, stats), where mapping is {schema_idx: template_idx}.
+    Exact subsequences are mapped directly. Otherwise, use a semi-global
+    alignment with free leading/trailing template gaps so cropped schema targets
+    align to their true region within full-length CIF chains. Internal gaps are
+    retained, which lets unmodelled template residues become holes rather than
+    shifting downstream coordinates.
+    """
+    n, m = len(schema_seq), len(template_seq)
+    if n == 0 or m == 0:
+        return {}, {"identity": 0.0, "coverage": 0.0, "mapped": 0, "matches": 0}
+
+    start = template_seq.find(schema_seq)
+    if start != -1:
+        mapping = {i: start + i for i in range(n)}
+        return mapping, {
+            "identity": 1.0,
+            "coverage": 1.0,
+            "mapped": int(n),
+            "matches": int(n),
+        }
+
+    gap, match, mismatch = -2, 2, -1
+    dp = np.zeros((n + 1, m + 1), dtype=np.int32)
+    ptr = np.zeros((n + 1, m + 1), dtype=np.int8)
+
+    # Schema residues cannot be skipped for free, but leading template residues
+    # can be skipped because the schema may be a cropped domain/antigen.
+    for i in range(1, n + 1):
+        dp[i, 0] = dp[i - 1, 0] + gap
+        ptr[i, 0] = 1
+    for j in range(1, m + 1):
+        dp[0, j] = 0
+        ptr[0, j] = 2
+
+    for i in range(1, n + 1):
+        qi = schema_seq[i - 1]
+        for j in range(1, m + 1):
+            tj = template_seq[j - 1]
+            residue_score = match if qi == tj and qi != "X" else mismatch
+            diag = dp[i - 1, j - 1] + residue_score
+            up = dp[i - 1, j] + gap      # template gap / missing template residue
+            left = dp[i, j - 1] + gap    # schema gap / extra template residue
+            best = max(diag, up, left)
+            dp[i, j] = best
+            ptr[i, j] = 0 if best == diag else (1 if best == up else 2)
+
+    # Free trailing template residues: finish at the best endpoint in the final
+    # schema row, rather than forcing alignment through template_seq[-1].
+    j = int(np.argmax(dp[n, :]))
+    i = n
+    mapping = {}
+    matches = 0
+    while i > 0:
+        move = ptr[i, j] if j >= 0 else 1
+        if j > 0 and move == 0:
+            i -= 1
+            j -= 1
+            mapping[i] = j
+            if schema_seq[i] == template_seq[j] and schema_seq[i] != "X":
+                matches += 1
+        elif move == 1 or j == 0:
+            i -= 1
+        else:
+            j -= 1
+
+    mapped = len(mapping)
+    stats = {
+        "identity": float(matches / mapped) if mapped else 0.0,
+        "coverage": float(mapped / n) if n else 0.0,
+        "mapped": int(mapped),
+        "matches": int(matches),
+    }
+    return mapping, stats
+
+
+def validate_alignment_or_raise(stats, min_identity=0.8, min_coverage=0.5):
+    if stats["identity"] < min_identity or stats["coverage"] < min_coverage:
+        raise ValueError(
+            "target_template alignment below thresholds: "
+            f"identity={stats['identity']:.3f} (min {min_identity}), "
+            f"coverage={stats['coverage']:.3f} (min {min_coverage}), "
+            f"mapped={stats['mapped']}"
+        )
+
+
 def _seqs_from_pdb(path: str) -> dict:
     chains: dict = {}
     seen: set = set()
@@ -702,17 +818,54 @@ def compute_dockq(ref_struct, pred_struct):
     }
 
 
-def compute_target_lddt(template_chain, pred_struct, target_chain_id, epitope_positions=None):
-    """All-atom LDDT of the predicted target chain against the template chain.
+def compute_target_lddt(
+    template_chain,
+    pred_struct,
+    target_chain_id,
+    epitope_positions=None,
+    min_identity=0.8,
+    min_coverage=0.5,
+    on_alignment_failure="disable_template",
+):
+    """All-atom LDDT of aligned predicted target residues against a template chain.
 
-    If epitope_positions is given (0-based indices), LDDT is computed only over
-    those residues.
+    The predicted target sequence defines the schema/design sequence. Template
+    residues are first aligned to that sequence so full-CIF templates with extra
+    regions or missing residues do not shift the comparison. If epitope_positions
+    is given (0-based predicted-chain indices), LDDT is computed over the mapped
+    subset of those residues.
     """
     pred_chain = pred_struct.chains[target_chain_id]
-    if epitope_positions is not None and len(epitope_positions) > 0:
-        mask = np.zeros(len(template_chain.rname), dtype=bool)
-        mask[epitope_positions] = True
-        template_chain = template_chain.residue_slice(mask)
-        pred_chain = pred_chain.residue_slice(mask)
-    result = _tp_lddt(template_chain, pred_chain)
+    schema_seq = "".join(_AA3TO1.get(str(r), "X") for r in pred_chain.rname)
+    template_seq, _, template_ca_mask = extract_template_chain_sequence_and_ca(template_chain)
+    mapping, stats = align_schema_to_template(schema_seq, template_seq)
+    try:
+        validate_alignment_or_raise(
+            stats, min_identity=min_identity, min_coverage=min_coverage
+        )
+    except ValueError:
+        if on_alignment_failure == "error":
+            raise
+        return None
+
+    pred_mask = np.zeros(len(pred_chain.rname), dtype=bool)
+    template_mask = np.zeros(len(template_chain.rname), dtype=bool)
+    epitope_set = set(epitope_positions or [])
+    restrict_epitope = bool(epitope_set)
+    for pred_i, template_i in mapping.items():
+        if restrict_epitope and pred_i not in epitope_set:
+            continue
+        if template_i < len(template_mask) and template_ca_mask[template_i]:
+            pred_mask[pred_i] = True
+            template_mask[template_i] = True
+
+    if not pred_mask.any():
+        if on_alignment_failure == "error":
+            raise ValueError("target_template LDDT has no aligned residues to compare")
+        return None
+
+    result = _tp_lddt(
+        template_chain.residue_slice(template_mask),
+        pred_chain.residue_slice(pred_mask),
+    )
     return float(result["LDDT"])
