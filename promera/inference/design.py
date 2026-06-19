@@ -546,7 +546,9 @@ class Design:
 
         with torch.no_grad():
             out = model.pairformer_forward(batch, recycling_steps=recycling_steps)
+            _cuda_mem_log("before refold diffusion")
             diff = model.sample_diffusion(batch, out, diff_cfg)
+            _cuda_mem_log("after refold diffusion")
 
         samples = diff["sample_atom_coords"].cpu().numpy()
         agg_confs = []
@@ -555,11 +557,13 @@ class Design:
             mul = diff_cfg.diffusion_samples
             ntoks = int(batch["token_pad_mask"][0].sum())
             for i in range(mul):
+                _cuda_mem_log(f"before refold confidence sample {i}")
                 conf = model.sm_confidence_module(
                     batch,
                     out | {"sample_atom_coords": coords[i::mul]},
                     multiplicity=1,
                 )
+                _cuda_mem_log(f"after refold confidence sample {i}")
                 pde = conf["pde"][0, :ntoks, :ntoks]
                 pae = conf["pae"][0, :ntoks, :ntoks]
                 plddt = conf["plddt"][0, :ntoks]
@@ -576,8 +580,10 @@ class Design:
                     use_torch=True,
                 )
                 torch.cuda.empty_cache()
+                _cuda_mem_log(f"after refold confidence sample {i} empty_cache")
 
                 if getattr(model.cfg.model, "has_contact_module", False):
+                    _cuda_mem_log(f"before refold contact sample {i}")
                     contact_out = model.contact_module(
                         batch,
                         out | {"sample_atom_coords": coords[i::mul]},
@@ -589,6 +595,7 @@ class Design:
                         batch["asym_id_"][0][:ntoks],
                     )
                     torch.cuda.empty_cache()
+                    _cuda_mem_log(f"after refold contact sample {i} empty_cache")
 
                 agg_conf.update(msa_info)
                 agg_confs.append(agg_conf)
@@ -631,7 +638,9 @@ class Design:
 
         out = model.pairformer_forward(batch, recycling_steps=cfg.recycling_steps)
         t1 = time.time()
+        _cuda_mem_log(f"before {name} b{b_idx} backbone diffusion")
         diffusion_out = model.sample_diffusion(batch, out, backbone_diff_cfg)
+        _cuda_mem_log(f"after {name} b{b_idx} backbone diffusion")
         t2 = time.time()
 
         all_samples = diffusion_out["sample_atom_coords"].cpu().numpy()
@@ -640,11 +649,13 @@ class Design:
         agg_conf = None
 
         ntoks = int(batch["token_pad_mask"][0].sum())
+        _cuda_mem_log(f"before {name} b{b_idx} backbone confidence")
         conf = model.sm_confidence_module(
             batch,
             out | {"sample_atom_coords": coords},
             multiplicity=1,
         )
+        _cuda_mem_log(f"after {name} b{b_idx} backbone confidence")
         pde = conf["pde"][0, :ntoks, :ntoks]
         pae = conf["pae"][0, :ntoks, :ntoks]
         plddt = conf["plddt"][0, :ntoks]
@@ -671,8 +682,10 @@ class Design:
                 asym_id=asym_id,
             )
         torch.cuda.empty_cache()
+        _cuda_mem_log(f"after {name} b{b_idx} backbone confidence empty_cache")
 
         if getattr(model.cfg.model, "has_contact_module", False):
+            _cuda_mem_log(f"before {name} b{b_idx} backbone contact")
             contact_out = model.contact_module(
                 batch,
                 out | {"sample_atom_coords": coords},
@@ -684,6 +697,7 @@ class Design:
                 batch["asym_id_"][0][:ntoks],
             )
             torch.cuda.empty_cache()
+            _cuda_mem_log(f"after {name} b{b_idx} backbone contact empty_cache")
 
         with open(f"{sample_dir}/backbone_confidence.json", "w") as f:
             f.write(json.dumps(agg_conf, indent=4))
@@ -728,6 +742,7 @@ class Design:
 
         if cfg.inverse_folder.type != "none":
             with tempfile.TemporaryDirectory() as ifold_dir:
+                _cuda_mem_log(f"before {name} b{b_idx} inverse folding")
                 redesigned_seqs = _inverse_fold(
                     backbone_pdb,
                     binder_chain,
@@ -735,6 +750,7 @@ class Design:
                     binder_seq,
                     ifold_dir,
                 )
+                _cuda_mem_log(f"after {name} b{b_idx} inverse folding")
 
             for j, seq in enumerate(redesigned_seqs):
                 design_id = f"sample{b_idx}_design{j}"
