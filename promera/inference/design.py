@@ -67,34 +67,16 @@ def _log(msg):
     print(f"[{time.strftime('%H:%M:%S')} rank{rank}] {msg}", flush=True)
 
 
-def _debug_cuda_mem_enabled() -> bool:
-    return os.environ.get("PROMERA_DEBUG_CUDA_MEM", "").lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
-def _cuda_mem_log(context: str):
-    """Log CUDA allocator state when PROMERA_DEBUG_CUDA_MEM is enabled."""
-    if not _debug_cuda_mem_enabled() or not torch.cuda.is_available():
-        return
-    _log(
-        f"{context}: cuda_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
-        f"cuda_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB "
-        f"cuda_max_allocated={torch.cuda.max_memory_allocated()/1e9:.2f}GB"
-    )
-
-
 def _cuda_cleanup(context: str):
     """Release cached CUDA allocations and log current memory state."""
     if not torch.cuda.is_available():
         return
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
-    _cuda_mem_log(context)
+    _log(
+        f"{context}: cuda_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        f"cuda_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
+    )
 
 
 def _build_binder_chain(binder_cfg, rng=None) -> dict:
