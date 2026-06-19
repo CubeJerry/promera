@@ -67,6 +67,28 @@ def _log(msg):
     print(f"[{time.strftime('%H:%M:%S')} rank{rank}] {msg}", flush=True)
 
 
+def _cuda_mem_debug(label):
+    if os.environ.get("PROMERA_DEBUG_CUDA_MEM") != "1":
+        return
+    if not torch.cuda.is_available():
+        _log(f"cuda_mem {label}: CUDA unavailable")
+        return
+
+    torch.cuda.synchronize()
+    _log(
+        f"cuda_mem {label}: "
+        f"allocated={torch.cuda.memory_allocated()} "
+        f"reserved={torch.cuda.memory_reserved()} "
+        f"max_allocated={torch.cuda.max_memory_allocated()}"
+    )
+
+
+def _cuda_cleanup(label):
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    _cuda_mem_debug(label)
+
+
 def _build_binder_chain(binder_cfg, rng=None) -> dict:
     """Return the binder chain entry to splice into the schema.
 
@@ -534,7 +556,9 @@ class Design:
 
         with torch.no_grad():
             out = model.pairformer_forward(batch, recycling_steps=recycling_steps)
+            _cuda_mem_debug("before refold diffusion")
             diff = model.sample_diffusion(batch, out, diff_cfg)
+            _cuda_mem_debug("after refold diffusion")
 
         samples = diff["sample_atom_coords"].cpu().numpy()
         agg_confs = []
@@ -543,6 +567,7 @@ class Design:
             mul = diff_cfg.diffusion_samples
             ntoks = int(batch["token_pad_mask"][0].sum())
             for i in range(mul):
+                _cuda_mem_debug(f"before refold confidence {i}")
                 conf = model.sm_confidence_module(
                     batch,
                     out | {"sample_atom_coords": coords[i::mul]},
@@ -563,7 +588,7 @@ class Design:
                     frame_mask=frame_mask,
                     use_torch=True,
                 )
-                torch.cuda.empty_cache()
+                _cuda_cleanup(f"after refold confidence cleanup {i}")
 
                 if getattr(model.cfg.model, "has_contact_module", False):
                     contact_out = model.contact_module(
@@ -576,10 +601,11 @@ class Design:
                         contact_out["pred_dist"][0, :ntoks, :ntoks].cpu(),
                         batch["asym_id_"][0][:ntoks],
                     )
-                    torch.cuda.empty_cache()
+                    _cuda_cleanup(f"after refold contact cleanup {i}")
 
                 agg_conf.update(msa_info)
                 agg_confs.append(agg_conf)
+        _cuda_cleanup("after final refold cleanup")
         return struct_new, samples, agg_confs
 
     def run_batch(self, model, batch):
@@ -619,7 +645,9 @@ class Design:
 
         out = model.pairformer_forward(batch, recycling_steps=cfg.recycling_steps)
         t1 = time.time()
+        _cuda_mem_debug("before backbone diffusion")
         diffusion_out = model.sample_diffusion(batch, out, backbone_diff_cfg)
+        _cuda_mem_debug("after backbone diffusion")
         t2 = time.time()
 
         all_samples = diffusion_out["sample_atom_coords"].cpu().numpy()
@@ -628,6 +656,7 @@ class Design:
         agg_conf = None
 
         ntoks = int(batch["token_pad_mask"][0].sum())
+        _cuda_mem_debug("before backbone confidence")
         conf = model.sm_confidence_module(
             batch,
             out | {"sample_atom_coords": coords},
@@ -658,7 +687,7 @@ class Design:
                 frame_mask=frame_mask.cpu().numpy(),
                 asym_id=asym_id,
             )
-        torch.cuda.empty_cache()
+        _cuda_cleanup("after backbone confidence cleanup")
 
         if getattr(model.cfg.model, "has_contact_module", False):
             contact_out = model.contact_module(
@@ -671,7 +700,7 @@ class Design:
                 contact_out["pred_dist"][0, :ntoks, :ntoks].cpu(),
                 batch["asym_id_"][0][:ntoks],
             )
-            torch.cuda.empty_cache()
+            _cuda_cleanup("after backbone contact cleanup")
 
         with open(f"{sample_dir}/backbone_confidence.json", "w") as f:
             f.write(json.dumps(agg_conf, indent=4))
@@ -716,6 +745,7 @@ class Design:
 
         if cfg.inverse_folder.type != "none":
             with tempfile.TemporaryDirectory() as ifold_dir:
+                _cuda_mem_debug("before inverse fold")
                 redesigned_seqs = _inverse_fold(
                     backbone_pdb,
                     binder_chain,
@@ -723,6 +753,7 @@ class Design:
                     binder_seq,
                     ifold_dir,
                 )
+                _cuda_mem_debug("after inverse fold")
 
             for j, seq in enumerate(redesigned_seqs):
                 design_id = f"sample{b_idx}_design{j}"
@@ -786,6 +817,8 @@ class Design:
                 _log(
                     f"  {design_id}: refold={time.time()-t_r0:.2f}s best_iptm={best:.3f}"
                 )
+                _cuda_cleanup(f"after per-design cleanup {design_id}")
 
+        _cuda_cleanup("after final batch cleanup")
         _log(f"{name} b{b_idx}: total_batch={time.time()-t0:.2f}s")
         self._last_batch_end = time.time()
