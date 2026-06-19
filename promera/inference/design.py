@@ -67,6 +67,18 @@ def _log(msg):
     print(f"[{time.strftime('%H:%M:%S')} rank{rank}] {msg}", flush=True)
 
 
+def _cuda_cleanup(context: str):
+    """Release cached CUDA allocations and log current memory state."""
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    _log(
+        f"{context}: cuda_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        f"cuda_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
+    )
+
+
 def _build_binder_chain(binder_cfg, rng=None) -> dict:
     """Return the binder chain entry to splice into the schema.
 
@@ -786,6 +798,10 @@ class Design:
                 _log(
                     f"  {design_id}: refold={time.time()-t_r0:.2f}s best_iptm={best:.3f}"
                 )
+                del struct_m, samples_m, refold_confs
+                if "refold_struct" in locals():
+                    del refold_struct
+                _cuda_cleanup(f"after {design_id} cleanup")
 
         _log(f"{name} b{b_idx}: total_batch={time.time()-t0:.2f}s")
         self._last_batch_end = time.time()
