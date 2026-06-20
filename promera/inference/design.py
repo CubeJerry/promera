@@ -278,6 +278,19 @@ def _map_epitope_residues(
         )
     return converted
 
+
+def _epitope_positions(chain_len: int, residues: list) -> list:
+    """Convert schema-numbered epitope residues to 0-based chain positions."""
+    positions = []
+    for residue in residues or []:
+        try:
+            pos = int(residue) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= pos < chain_len:
+            positions.append(pos)
+    return positions
+
 def _resolve_epitope_idx(
     schema: dict, epitope_chain: str, epitope_resnums: list
 ) -> list:
@@ -847,14 +860,7 @@ class Design:
         )
         if epitope_chain and epitope_residues:
             chain_len = len(backbone_struct.chains[epitope_chain].rname)
-            epitope_positions = []
-            for residue in epitope_residues:
-                try:
-                    pos = int(residue) - 1
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= pos < chain_len:
-                    epitope_positions.append(pos)
+            epitope_positions = _epitope_positions(chain_len, epitope_residues)
         if agg_conf is not None:
             agg_conf["contact_stats"] = compute_interface_contacts(
                 backbone_struct,
