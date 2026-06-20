@@ -164,7 +164,7 @@ def _build_schema_for_input(
 
 
 
-def _format_residue_ranges(residues) -> str:
+def _format_ranges(residues) -> str:
     """Format residue identifiers compactly for short log/error messages."""
     values = [str(r) for r in residues]
     try:
@@ -185,7 +185,7 @@ def _format_residue_ranges(residues) -> str:
     return "[" + ",".join(ranges) + "]"
 
 
-def _maybe_convert_epitope_residues_from_template_to_schema(
+def _map_epitope_residues(
     schema: dict, cfg, epitope_chain: str
 ) -> list:
     """Convert template residue IDs to schema positions for cropped targets.
@@ -273,8 +273,8 @@ def _maybe_convert_epitope_residues_from_template_to_schema(
     if converted != epitope_residues:
         _log(
             "Converted epitope residues using target template: "
-            f"template residues {_format_residue_ranges(epitope_residues)} -> "
-            f"schema positions {_format_residue_ranges(converted)}"
+            f"template residues {_format_ranges(epitope_residues)} -> "
+            f"schema positions {_format_ranges(converted)}"
         )
     return converted
 
@@ -538,7 +538,7 @@ class Design:
         struct.msa_summary = msa_summary(msas)
 
         # finalize_feats zeros is_epitope; override after the call.
-        epitope_residues = _maybe_convert_epitope_residues_from_template_to_schema(
+        epitope_residues = _map_epitope_residues(
             schema,
             cfg,
             cfg.epitope_chain,
