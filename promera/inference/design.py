@@ -550,6 +550,9 @@ class Design:
         )
         if epitope_idx:
             feats["is_epitope"][epitope_idx] = 1
+        # Preserve the schema-numbered epitope list used for conditioning so
+        # downstream confidence metrics score the same target residues.
+        struct.epitope_residues = epitope_residues
 
         paratope_idx = []
         if cfg.binder.type == "vhh" and cfg.binder.get("paratope_from_cdrs", False):
@@ -837,11 +840,21 @@ class Design:
             paratope_positions = []
         epitope_chain = cfg.epitope_chain or None
         epitope_positions = None
-        if epitope_chain and cfg.epitope_residues:
-            ridx = backbone_struct.chains[epitope_chain].ridx.tolist()
-            epitope_positions = [
-                ridx.index(r) for r in cfg.epitope_residues if r in ridx
-            ]
+        epitope_residues = getattr(
+            struct,
+            "epitope_residues",
+            list(cfg.epitope_residues or []),
+        )
+        if epitope_chain and epitope_residues:
+            chain_len = len(backbone_struct.chains[epitope_chain].rname)
+            epitope_positions = []
+            for residue in epitope_residues:
+                try:
+                    pos = int(residue) - 1
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= pos < chain_len:
+                    epitope_positions.append(pos)
         if agg_conf is not None:
             agg_conf["contact_stats"] = compute_interface_contacts(
                 backbone_struct,
