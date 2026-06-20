@@ -163,6 +163,122 @@ def _build_schema_for_input(
     return schema
 
 
+
+def _format_ranges(residues) -> str:
+    """Format residue identifiers compactly for short log/error messages."""
+    values = [str(r) for r in residues]
+    try:
+        ints = [int(v) for v in values]
+    except ValueError:
+        return "[" + ",".join(values) + "]"
+
+    ranges = []
+    start = prev = ints[0] if ints else None
+    for value in ints[1:]:
+        if value == prev + 1:
+            prev = value
+            continue
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = value
+    if start is not None:
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return "[" + ",".join(ranges) + "]"
+
+
+def _map_epitope_residues(
+    schema: dict, cfg, epitope_chain: str
+) -> list:
+    """Convert template residue IDs to schema positions for cropped targets.
+
+    Historically epitope_residues were interpreted as 1-based positions in the
+    input schema sequence.  When a target_template is present, users often pass
+    residue IDs from that template instead.  If every requested residue exists
+    as a template residue ID, map those IDs through the schema-template
+    alignment and return schema 1-based positions.  If no requested residue is
+    present in the template, preserve the historical schema-position behavior.
+    """
+    epitope_residues = list(getattr(cfg, "epitope_residues", None) or [])
+    if not epitope_residues:
+        return epitope_residues
+
+    target_tmpl = getattr(cfg, "target_template", None)
+    if not target_tmpl:
+        return epitope_residues
+
+    template_path = target_tmpl.path
+    template_chain_id = getattr(target_tmpl, "chain", None) or epitope_chain
+    if not template_chain_id:
+        return epitope_residues
+
+    template = Structure.from_mmcif(template_path)
+    if template_chain_id not in template.chains:
+        raise ValueError(
+            f"chain {template_chain_id!r} not in {template_path}; "
+            f"available: {list(template.chains)}"
+        )
+    chain = template.chains[template_chain_id]
+
+    residue_ids = [str(ridx) for ridx in chain.ridx.tolist()]
+    duplicate_ids = sorted({rid for rid in residue_ids if residue_ids.count(rid) > 1})
+    if duplicate_ids:
+        raise ValueError(
+            f"target_template chain {template_chain_id!r} has duplicate residue IDs: "
+            f"{duplicate_ids}"
+        )
+
+    template_residue_to_idx = {rid: i for i, rid in enumerate(residue_ids)}
+    requested_ids = [str(r) for r in epitope_residues]
+    found = [rid in template_residue_to_idx for rid in requested_ids]
+
+    if not any(found):
+        return epitope_residues
+    if not all(found):
+        found_ids = [rid for rid, is_found in zip(requested_ids, found) if is_found]
+        missing_ids = [rid for rid, is_found in zip(requested_ids, found) if not is_found]
+        raise ValueError(
+            "epitope_residues appear to mix template residue IDs and schema "
+            f"positions for target_template chain {template_chain_id!r}: "
+            f"found template residue IDs {found_ids}, but not {missing_ids}. "
+            "Use one numbering system consistently."
+        )
+
+    schema_seq = extract_schema_target_sequence(schema, epitope_chain)
+    template_seq, _, _ = extract_template_chain_sequence_and_ca(chain)
+    mapping, stats = align_schema_to_template(schema_seq, template_seq)
+    validate_alignment_or_raise(
+        stats,
+        min_identity=getattr(target_tmpl, "min_identity", 0.8),
+        min_coverage=getattr(target_tmpl, "min_coverage", 0.5),
+    )
+    template_to_schema = {template_i: schema_i for schema_i, template_i in mapping.items()}
+
+    converted = []
+    outside = []
+    for original, rid in zip(epitope_residues, requested_ids):
+        template_i = template_residue_to_idx[rid]
+        schema_i = template_to_schema.get(template_i)
+        if schema_i is None:
+            outside.append(original)
+            continue
+        converted.append(schema_i + 1)
+
+    if outside:
+        raise ValueError(
+            "epitope_residues found in target_template but outside the aligned "
+            f"schema sequence for chain {epitope_chain!r}: {outside}. "
+            "This usually means the input schema sequence is cropped away from "
+            "those template residues."
+        )
+
+    if converted != epitope_residues:
+        _log(
+            "Converted epitope residues using target template: "
+            f"template residues {_format_ranges(epitope_residues)} -> "
+            f"schema positions {_format_ranges(converted)}"
+        )
+    return converted
+
+
 def _resolve_epitope_idx(
     schema: dict, epitope_chain: str, epitope_resnums: list
 ) -> list:
@@ -423,13 +539,21 @@ class Design:
         struct.msa_summary = msa_summary(msas)
 
         # finalize_feats zeros is_epitope; override after the call.
+        epitope_residues = _map_epitope_residues(
+            schema,
+            cfg,
+            cfg.epitope_chain,
+        )
         epitope_idx = _resolve_epitope_idx(
             schema,
             cfg.epitope_chain,
-            list(cfg.epitope_residues or []),
+            epitope_residues,
         )
         if epitope_idx:
             feats["is_epitope"][epitope_idx] = 1
+        # Preserve the schema-numbered epitope list used for conditioning so
+        # downstream confidence metrics score the same target residues.
+        struct.epitope_residues = epitope_residues
 
         paratope_idx = []
         if cfg.binder.type == "vhh" and cfg.binder.get("paratope_from_cdrs", False):
@@ -717,11 +841,21 @@ class Design:
             paratope_positions = []
         epitope_chain = cfg.epitope_chain or None
         epitope_positions = None
-        if epitope_chain and cfg.epitope_residues:
-            ridx = backbone_struct.chains[epitope_chain].ridx.tolist()
-            epitope_positions = [
-                ridx.index(r) for r in cfg.epitope_residues if r in ridx
-            ]
+        epitope_residues = getattr(
+            struct,
+            "epitope_residues",
+            list(cfg.epitope_residues or []),
+        )
+        if epitope_chain and epitope_residues:
+            chain_len = len(backbone_struct.chains[epitope_chain].rname)
+            epitope_positions = []
+            for residue in epitope_residues:
+                try:
+                    pos = int(residue) - 1
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= pos < chain_len:
+                    epitope_positions.append(pos)
         if agg_conf is not None:
             agg_conf["contact_stats"] = compute_interface_contacts(
                 backbone_struct,
