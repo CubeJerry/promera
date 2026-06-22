@@ -79,6 +79,16 @@ def _cuda_cleanup(context: str):
     )
 
 
+def _cuda_mem_log(context: str):
+    """Log current CUDA memory state without clearing the allocator cache."""
+    if not torch.cuda.is_available():
+        return
+    _log(
+        f"{context}: cuda_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+        f"cuda_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
+    )
+
+
 def _build_binder_chain(binder_cfg, rng=None) -> dict:
     """Return the binder chain entry to splice into the schema.
 
