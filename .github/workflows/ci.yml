@@ -1,0 +1,19 @@
+name: Promera source checks
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  source-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python sources
+        run: python -m compileall -q promera tests
+      - name: Run lightweight regression tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
