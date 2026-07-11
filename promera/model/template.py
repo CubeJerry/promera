@@ -1,12 +1,46 @@
-import gc, os
+import gc
+import os
 from typing import Any
+
+import numpy as np
 import torch
 from pytorch_lightning import LightningModule
-from ..utils.tensor_utils import tensor_tree_map
-from ..utils.logger import Logger
+
 from ..utils.ema import ExponentialMovingAverage
+from ..utils.logger import Logger
 from ..utils.scheduler import AlphaFoldLRScheduler
-import numpy as np
+from ..utils.tensor_utils import tensor_tree_map
+
+
+def _release_inference_memory(context: str = "") -> None:
+    """Collect dead Python objects and return unused CUDA blocks to the driver.
+
+    This is deliberately called at batch boundaries, after ``run_batch`` has
+    returned and its large pairformer/diffusion/confidence locals are no longer in
+    scope.  ``empty_cache`` cannot free live tensors, but at this point it prevents
+    the allocator's high-water mark from creeping across a long design run.
+    """
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    try:
+        torch.cuda.ipc_collect()
+    except RuntimeError:
+        # ipc_collect may be unavailable before CUDA IPC has been initialised.
+        pass
+    if str(os.environ.get("PROMERA_DEBUG_CUDA_MEM", "0")).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        prefix = f"{context}: " if context else ""
+        print(
+            f"{prefix}cuda_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB "
+            f"cuda_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB",
+            flush=True,
+        )
 
 
 class LightningModuleTemplate(LightningModule):
@@ -64,7 +98,6 @@ class LightningModuleTemplate(LightningModule):
                 self.ema.to(self.device)
 
             if self.cached_weights is not None:
-
                 self.load_state_dict(self.cached_weights)
                 self.cached_weights = None
 
@@ -87,9 +120,7 @@ class LightningModuleTemplate(LightningModule):
 
         #### weight surgery - assumes pretrained model doesn't use EMA ####
         # state_dict = checkpoint["state_dict"]
-
         # current_model_state = self.state_dict()
-
         # for key in state_dict:
         #     requires_grad = False
         #     try:
@@ -97,11 +128,7 @@ class LightningModuleTemplate(LightningModule):
         #     except:
         #         pass
         #     if not requires_grad:
-        #         # Overwrite the checkpoint's value with the live value
         #         state_dict[key] = current_model_state[key]
-        #         # print('Not loading from ckpt:', key)
-        #     else:
-        #         # print("Loading from ckpt:", key)
 
     def on_train_epoch_start(self):
         if self.cfg.model.ema and self.ema is None:
@@ -120,7 +147,6 @@ class LightningModuleTemplate(LightningModule):
         self.ensure_ema_in_train_state()
 
         if os.environ.get("WEIGHT_SURGERY", "0") == "1":
-            # print('Weight surgery', flush=True)
             if getattr(self, "ckpt1", None) is None:
                 print("Loading", os.environ["CKPT1"], flush=True)
                 ckpt1 = torch.load(
@@ -138,14 +164,12 @@ class LightningModuleTemplate(LightningModule):
             start = int(os.environ["STEP1"])
             end = int(os.environ["STEP2"])
             r = (self.trainer.global_step - start) / (end - start)
-            # print('Setting with ratio', r)
             toload = {
                 k: (1 - r) * self.ckpt1[k] + r * self.ckpt2[k] for k in self.ckpt1
             }
             self.load_state_dict(toload, strict=False)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-
         self._logger.log("grad_norm", self.gradient_norm(self))
         self._logger.log("param_norm", self.parameter_norm(self))
 
@@ -169,7 +193,6 @@ class LightningModuleTemplate(LightningModule):
 
     def configure_optimizers(self):
         """Configure the optimizer."""
-
         cfg = self.cfg.optimizer
         optimizer = torch.optim.Adam(
             [p for p in self.parameters() if p.requires_grad],
@@ -180,8 +203,6 @@ class LightningModuleTemplate(LightningModule):
         scheduler = AlphaFoldLRScheduler(optimizer, **cfg.scheduler)
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
-        return optimizer
-
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         ev = self.evals[dataloader_idx]
         savedir = f'{os.environ["MODEL_DIR"]}/eval_step{self.trainer.global_step}/{ev.cfg.name}'
@@ -189,5 +210,18 @@ class LightningModuleTemplate(LightningModule):
         os.makedirs(savedir, exist_ok=True)
         ev.run_batch(self, batch, savedir=savedir, logger=self._logger)
 
+    def on_predict_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        # At the start of batch N, all temporary objects from batch N-1 should have
+        # fallen out of scope.  Clean before allocating the next large diffusion.
+        if batch_idx:
+            _release_inference_memory(f"before predict batch {batch_idx}")
+
     def predict_step(self, batch, batch_idx):
-        self.inference_task.run_batch(self, batch)
+        return self.inference_task.run_batch(self, batch)
+
+    def on_predict_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
+        # run_batch has returned, so its local backbone/refold tensors are dead.
+        _release_inference_memory(f"after predict batch {batch_idx}")
+
+    def on_predict_epoch_end(self):
+        _release_inference_memory("after predict epoch")
