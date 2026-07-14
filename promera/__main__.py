@@ -107,7 +107,22 @@ if meta_init:
 
 model.inference_task = task
 
-batch_size = int(task_cfg.get("batch_size", 1))
+requested_batch_size = int(task_cfg.get("batch_size", 1))
+# The proven standalone Design workflow on WEHI uses DataLoader batch_size=1.
+# VHH Design samples variable CDR lengths, and some generated feature arrays are
+# not guaranteed to be stack-compatible across independently sampled designs.
+# Keep inter-job/GPU parallelism in SLURM, but never batch multiple Design items
+# inside one process. This also safely handles old NOMINEE configs that recorded
+# the former experimental batch_size=4 value.
+if args.task.endswith(".Design"):
+    batch_size = 1
+    if requested_batch_size != batch_size:
+        print(
+            f"PROMERA_DESIGN_BATCH_SIZE_OVERRIDDEN:{requested_batch_size}->{batch_size} "
+            "(single-item Design batches are required for variable-length VHH features)"
+        )
+else:
+    batch_size = requested_batch_size
 # Round the padded token count up to this multiple so a compiled, token-
 # dimensioned denoiser (compile_score) sees a stable shape across batches and
 # stops recompiling on every new size (1 = off; see collate / README).
