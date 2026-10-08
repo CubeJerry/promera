@@ -389,3 +389,85 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
     assert args[args.index('--pwd') + 1] == str(work)
     assert '/opt/pose_guidance/experiment.py' in args
     assert not list((work / '.tmp').iterdir())
+
+
+def test_launcher_discovers_managed_image_and_assets(tmp_path):
+    import os
+    import subprocess
+
+    home = tmp_path / "home with spaces"
+    config_dir = home / "dev"
+    config_dir.mkdir(parents=True)
+    parent = tmp_path / "scratch with spaces"
+    image_release = parent / ".nominee/images/promera/releases/release42.sif"
+    image_release.parent.mkdir(parents=True)
+    image_release.write_text("synthetic image")
+    (image_release.parent.parent / "current.sif").symlink_to("releases/release42.sif")
+    asset_release = parent / ".nominee/assets/promera/releases/release42"
+    (asset_release / "checkpoints").mkdir(parents=True)
+    (asset_release / "checkpoints/promera_2606.ckpt").write_text("synthetic checkpoint")
+    (asset_release.parent.parent / "current").symlink_to("releases/release42")
+    config = config_dir / "config.yaml"
+    config.write_text('paths:\n  installation_parent: "$POSE_TEST_PARENT"  # site root\n')
+    work = tmp_path / "experiment work"
+    work.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_apptainer = bin_dir / "apptainer"
+    fake_apptainer.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$POSE_ARG_LOG"\n')
+    fake_apptainer.chmod(0o755)
+    capture = tmp_path / "arguments"
+    env = dict(os.environ, HOME=str(home), POSE_TEST_PARENT=str(parent),
+               POSE_WORK=str(work), POSE_ARG_LOG=str(capture),
+               PATH=f"{bin_dir}:{os.environ['PATH']}")
+    for key in ("PROMERA_IMAGE", "PROMERA_ASSETS", "NOMINEE_HOST_CONFIG",
+                "NOMINEE_CONFIG", "POSE_NOMINEE_CONFIG"):
+        env.pop(key, None)
+    wrapper = Path(__file__).with_name("container.sh")
+    command = ["bash", str(wrapper), "preflight", "--experiment", str(work / "exp")]
+    result = subprocess.run(command, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    argv = capture.read_text().splitlines()
+    assert str(image_release) in argv
+    assert any(str(asset_release) + ":/opt/nominee/assets:ro" in arg for arg in argv)
+    assert "Promera image:" in result.stderr
+    assert not list((work / ".tmp").iterdir())
+
+    # Both explicit overrides work without config, including GPU launch.
+    config.unlink()
+    env.update(PROMERA_IMAGE=str(image_release), PROMERA_ASSETS=str(asset_release))
+    result = subprocess.run(["bash", str(wrapper), "run", "--experiment", "test"],
+                            env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert "--nv" in capture.read_text().splitlines()
+
+    # In automatic mode, never silently fall back to old releases.
+    env.pop("PROMERA_IMAGE")
+    env.pop("PROMERA_ASSETS")
+    config.write_text('paths:\n  installation_parent: "$POSE_TEST_PARENT"\n')
+    (image_release.parent.parent / "current.sif").unlink()
+    result = subprocess.run(command, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "active Promera image not found" in result.stderr
+
+
+def test_nominee_config_validation_without_host_yaml(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    parser = Path(__file__).with_name("nominee_paths.py")
+    config = tmp_path / "config.yaml"
+    config.write_text("paths:\n  installation_parent: ''\n")
+    result = subprocess.run([sys.executable, str(parser), str(config)],
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "blank or unsupported" in result.stderr
+
+    config.write_text('paths:\n  installation_parent: "$UNDEFINED_POSE_TEST_ROOT"\n')
+    env = dict(os.environ)
+    env.pop("UNDEFINED_POSE_TEST_ROOT", None)
+    result = subprocess.run([sys.executable, str(parser), str(config)],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode != 0
+    assert "undefined environment variable" in result.stderr

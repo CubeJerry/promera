@@ -82,13 +82,32 @@ git clone --branch feature/cross-chain-pose-conditioning --single-branch \
 export POSE_SOURCE="$(cd promera-pose-guidance && pwd -P)"
 
 module load apptainer
-export PROMERA_IMAGE=/absolute/path/to/existing/promera/current.sif
-# This must contain checkpoints/, tinyprot/, boltzgen/ and ligandmpnn/.
-export PROMERA_ASSETS=/absolute/path/to/promera/assets
+# Only the writable experiment location needs setting.
 export POSE_WORK=/absolute/path/to/separate/pose-guidance-work
 mkdir -p "$POSE_WORK"
 ```
 
+The launcher automatically reads the **local, populated NOMINEE config** at
+`$HOME/dev/config.yaml` (for a different checkout, export
+`NOMINEE_CONFIG=/absolute/path/to/dev/config.yaml`). It reads only
+`paths.installation_parent` and derives:
+
+```text
+<installation_parent>/.nominee/images/promera/current.sif
+<installation_parent>/.nominee/assets/promera/current
+```
+
+It resolves the active release symlinks and checks that the image and checkpoint
+exist, with a clear error if the installation is missing. The host must have
+Python 3; no host-side PyYAML is needed. If set, `POSE_NOMINEE_CONFIG` takes
+precedence over `NOMINEE_HOST_CONFIG`, `NOMINEE_CONFIG` and the `$HOME/dev`
+fallback. `PROMERA_IMAGE` and `PROMERA_ASSETS` remain optional **independent**
+overrides; if both are set, no NOMINEE config is needed. Check the resolved paths
+printed when the launcher runs. The checkout and managed storage must be
+accessible from both login and compute nodes.
+
+The tracked example `CubeJerry/dev/config.yaml` has empty site values; use
+the locally configured file that your NOMINEE installation actually uses.
 Use the **actual generation task YAML** from the source run, not its higher-level
 `promera_run.json`, not a Design-from-Pose task manifest, and not the install
 configuration. Its framework must match the selected guide's framework sequence.

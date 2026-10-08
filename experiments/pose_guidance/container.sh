@@ -1,15 +1,42 @@
 #!/usr/bin/env bash
 # Load only this experimental task. Keep the patched image's Promera/Boltz-IF code.
 set -euo pipefail
-: "${PROMERA_IMAGE:?Set PROMERA_IMAGE to the existing patched Promera .sif}"
-: "${PROMERA_ASSETS:?Set PROMERA_ASSETS to the directory containing checkpoints/, tinyprot/, and boltzgen/}"
 : "${POSE_WORK:?Set POSE_WORK to a separate writable experiment workspace}"
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 WORK=$(cd -- "$POSE_WORK" && pwd -P)
-ASSETS=$(cd -- "$PROMERA_ASSETS" && pwd -P)
+# NOMINEE config specifies installation_parent; current image/asset releases live
+# beneath <installation_parent>/.nominee. Manual overrides remain supported.
+if [[ -z "${PROMERA_IMAGE:-}" || -z "${PROMERA_ASSETS:-}" ]]; then
+    config="${POSE_NOMINEE_CONFIG:-${NOMINEE_HOST_CONFIG:-${NOMINEE_CONFIG:-}}}"
+    [[ -n "$config" ]] || config="${HOME:?HOME must be set}/dev/config.yaml"
+    [[ -f "$config" ]] || {
+        echo "ERROR: NOMINEE config not found: $config (set NOMINEE_CONFIG or both PROMERA_IMAGE and PROMERA_ASSETS)" >&2
+        exit 2
+    }
+    discovered=$(python3 "$HERE/nominee_paths.py" "$config") || exit 2
+    mapfile -t managed_paths <<< "$discovered"
+    [[ ${#managed_paths[@]} -eq 2 ]] || {
+        echo "ERROR: NOMINEE path resolver returned invalid paths: $config" >&2
+        exit 2
+    }
+    PROMERA_IMAGE="${PROMERA_IMAGE:-${managed_paths[0]}}"
+    PROMERA_ASSETS="${PROMERA_ASSETS:-${managed_paths[1]}}"
+fi
+[[ -f "$PROMERA_IMAGE" ]] || {
+    echo "ERROR: active Promera image not found: $PROMERA_IMAGE (check NOMINEE installation)" >&2
+    exit 2
+}
+[[ -d "$PROMERA_ASSETS" ]] || {
+    echo "ERROR: active Promera assets not found: $PROMERA_ASSETS (check NOMINEE installation)" >&2
+    exit 2
+}
 IMAGE=$(readlink -f -- "$PROMERA_IMAGE")
-[[ -f "$IMAGE" ]] || { echo 'ERROR: Promera image not found' >&2; exit 2; }
-[[ -f "$ASSETS/checkpoints/promera_2606.ckpt" ]] || { echo 'ERROR: incorrect asset root (checkpoint missing)' >&2; exit 2; }
+ASSETS=$(readlink -f -- "$PROMERA_ASSETS")
+[[ -f "$ASSETS/checkpoints/promera_2606.ckpt" ]] || {
+    echo "ERROR: Promera checkpoint missing beneath $ASSETS" >&2
+    exit 2
+}
+printf 'Promera image: %s\nPromera assets: %s\n' "$IMAGE" "$ASSETS" >&2
 [[ ! -d "$WORK/promera" ]] || { echo 'ERROR: POSE_WORK must not be a Promera source checkout' >&2; exit 2; }
 mkdir -p "$WORK/.cache/torch" "$WORK/.cache/triton" "$WORK/.tmp"
 TEMP=$(mktemp -d "$WORK/.tmp/pose-guide.XXXXXX")
