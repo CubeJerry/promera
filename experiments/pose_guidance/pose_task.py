@@ -5,6 +5,7 @@ Do not place the whole experimental checkout ahead of a patched runtime package.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import contextmanager
 import hashlib
 import json
@@ -18,7 +19,7 @@ import torch
 from promera.data import utils as data_utils
 from promera.inference.design import Design, _sample_dir
 
-from pose_geometry import (chain_sequence, cross_distogram, digest,
+from pose_geometry import (chain_sequence, cone_placement, cross_distogram, digest,
                            framework_map, jitter, merge_distogram)
 
 
@@ -54,6 +55,15 @@ class PoseGuidedDesign(Design):
             raise ValueError('configuration no longer matches the prepared guide')
         if not 0 <= int(self.guide.pairs) <= 16:
             raise ValueError('invalid pose pair count')
+        interval = self.guide.get('approach_angle_range_degrees')
+        if interval is not None:
+            if not isinstance(interval, Sequence) or isinstance(interval, (str, bytes)) or len(interval) != 2:
+                raise ValueError('approach angle range must have two degree endpoints')
+            lo, hi = map(float, interval)
+            if not np.isfinite([lo, hi]).all() or not 0 <= lo <= hi <= 180:
+                raise ValueError('approach angle range must satisfy 0 <= min <= max <= 180')
+            if int(self.guide.pairs) <= 0:
+                raise ValueError('angular guidance requires nonzero cross-chain pairs')
         # The pinned collator otherwise pads these matrices along only one axis.
         # This process-local registration happens only when this task is selected.
         for key in ('distogram_emb', 'distogram_mask'):
@@ -78,8 +88,20 @@ class PoseGuidedDesign(Design):
             raise ValueError('generated framework mapping differs from the guide')
         b_idx = int(feats['backbone_idx'])
         seed = int.from_bytes(hashlib.sha256(f'{self.guide.seed}:{b_idx}'.encode()).digest()[:4], 'big')
-        framework = jitter(self.plan['source_framework_coords'], seed,
-                           float(self.guide.rotation_degrees), float(self.guide.translation_angstrom))
+        interval = self.guide.get('approach_angle_range_degrees')
+        if interval is not None:
+            framework, guide_metadata = cone_placement(
+                self.plan['source_framework_coords'], self.plan['source_axis'], seed,
+                float(interval[0]), float(interval[1]),
+                float(self.guide.translation_angstrom),
+                pivot=np.asarray(self.plan['target_coords'], dtype=float)[
+                    self.plan['target_landmarks']
+                ].mean(axis=0),
+            )
+        else:
+            framework = jitter(self.plan['source_framework_coords'], seed,
+                               float(self.guide.rotation_degrees), float(self.guide.translation_angstrom))
+            guide_metadata = {'guide_sampling_policy': 'legacy_rigid_jitter'}
         target_ids = [self.plan['target_labels'][i] for i in self.plan['target_landmarks']]
         target_tokens = [offsets[name] + ordinal for name, ordinal in target_ids]
         binder_tokens = [offsets[self.cfg.binder.chain] + fixed[i] for i in self.plan['binder_landmarks']]
@@ -88,8 +110,12 @@ class PoseGuidedDesign(Design):
             np.asarray(self.plan['target_coords'])[self.plan['target_landmarks']],
             framework[self.plan['binder_landmarks']], int(self.guide.pairs))
         merge_distogram(feats, bins, mask)
-        feats['pose_record'] = {'pairs': records, 'jitter_seed': seed,
-                                'generation_only': True, 'plan_sha256': self.guide.plan_sha256}
+        feats['pose_record'] = {
+            'pairs': records, 'jitter_seed': seed,
+            'generation_only': True, 'plan_sha256': self.guide.plan_sha256,
+            'approach_angle_range_degrees': list(interval) if interval is not None else None,
+            **guide_metadata,
+        }
         return feats
 
     def _refold_batch(self, model: Any, *args: Any, **kwargs: Any) -> Any:

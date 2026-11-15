@@ -4,6 +4,72 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## Quick start: angle-range generation on current NOMINEE main
+
+This tests whether a selected VHH pose can guide fresh Promera backbones into a
+**requested range of target-relative approach angles**. Pass `--angle-range 15:35`
+to sample *guide* approach-axis deviations of 15 to 35 degrees from the chosen
+source pose. It is not an absolute angle to the antigen surface normal, and it
+does not guarantee that unconstrained output structures will recover that range.
+
+The current NOMINEE `dev` main creates the actual Promera backend task config at
+`<run>/promera/promera_batch_1.yaml`. Use that file, **not** the flat
+`promera_run.json` or the site-wide `dev/config.yaml`, as `--base-config`.
+
+```bash
+cd /vast/home/users/chen.je
+git clone --branch feature/cross-chain-pose-conditioning --single-branch \
+  https://github.com/CubeJerry/promera.git promera-pose-guidance
+# For an already-cloned checkout, use: git -C promera-pose-guidance pull --ff-only
+
+module load apptainer
+export POSE_SOURCE=/vast/home/users/chen.je/promera-pose-guidance
+export NOMINEE_CONFIG=/vast/home/users/chen.je/dev/config.yaml
+export POSE_WORK=/vast/scratch/users/chen.je/pose-guidance-work
+export RUN="$POSE_SOURCE/experiments/pose_guidance/container.sh"
+mkdir -p "$POSE_WORK"
+
+# CHANGE these two paths to a real completed run and selected VHH complex:
+export SOURCE_RUN=/vast/scratch/users/chen.je/nominee-runs/REPLACE_RUN_NAME
+export GUIDE_CIF=/absolute/path/to/selected-refold.cif
+export BASE_CONFIG="$SOURCE_RUN/promera/promera_batch_1.yaml"
+test -s "$BASE_CONFIG" && test -s "$GUIDE_CIF" || {
+  echo "Missing Promera backend config or guide CIF"; exit 1;
+}
+
+bash "$RUN" prepare --base-config "$BASE_CONFIG" --pose "$GUIDE_CIF" \
+  --out "$POSE_WORK/angle-smoke-15-35" --profile smoke --angle-range 15:35
+
+for job in 0 1 2; do
+  bash "$RUN" preflight --experiment "$POSE_WORK/angle-smoke-15-35" --job "$job" || break
+done
+
+export POSE_EXPERIMENT="$POSE_WORK/angle-smoke-15-35"
+cd "$POSE_WORK"
+sbatch --array=0-2%1 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
+# After all three array jobs finish:
+bash "$RUN" analyse --experiment "$POSE_WORK/angle-smoke-15-35"
+```
+
+This source-relative angle smoke requests **six backbones / 30 refolds**:
+control, 16-pair original-pose guide, and 16-pair angular-range guide. The
+legacy smoke without `--angle-range` remains four backbones / 20 refolds.
+
+The angular guide rotates the intact VHH reference about the selected antigen
+patch, not around the VHH centre. The requested angle and actual recovered
+angle are reported separately. A change in the VHH body's displacement is
+expected during such rotation, so range evaluation uses antigen-patch radial
+distance and framework integrity rather than exact source-centroid placement.
+The additional angle constraint is **not applied during refolding**.
+
+Image and asset releases come automatically from `dev/config.yaml`.
+The launcher now also mounts the managed installation parent and MSA cache
+read-only, while the separate experiment directory remains writable.
+Manual `POSE_EXTRA_BINDS` are needed only for source inputs outside those
+managed directories. An older installed Promera image may be incompatible
+with current NOMINEE multichain/symmetry features; preflight fails explicitly
+rather than silently disabling them.
+
 ## Question and implementation
 
 Can sparse target-to-VHH distances enrich a desired approach geometry while
@@ -42,6 +108,7 @@ backbone is an execution error, not silently counted as an unsuccessful design.
 | anchors8 | 8 | Original pose |
 | anchors16 | 16 | Original pose |
 | nearby16 | 16 | Up to 15 degrees rotation and 2 A translation |
+| cone16 (with --angle-range) | 16 | User-specified angular interval around the selected pose; antigen-patch pivot |
 
 The pair sets are nested and distribute coverage over all eight landmarks.
 Four pairs do **not** determine all six rigid-body degrees of freedom. More
@@ -52,11 +119,9 @@ within the stated bounds, not uniformly over SO(3). Generated structures are sti
 all-atom model outputs: the model can deform the framework despite rigid guide
 perturbation. That outcome is measured, not ruled out by construction.
 
-The smoke profile runs control and anchors16, with two backbones each and one
-replicate: **4 backbones and 20 refolds** at one sequence per backbone. It uses
+The baseline smoke (no angle range) runs control and anchors16, requesting 4 backbones and 20 refolds. With --angle-range it also runs cone16, requesting 6 backbones and 30 refolds. It uses
 the normal diffusion settings, not a scientifically misleading two-step sampler.
-The pilot runs all five conditions, 32 backbones each and three replicate seeds:
-**480 backbones and 2,400 requested refolds** at one sequence per backbone.
+The pilot runs five conditions, 32 backbones each and three seeds (480 backbones, 2,400 requested refolds); --angle-range adds a sixth condition (576 backbones, 2,880 requested refolds).
 Actual refolds can be fewer if the installed generation/IF path rejects a backbone.
 
 Keep the target, framework sequence, CDR length ranges, inverse folder, sequence
@@ -114,17 +179,14 @@ configuration. Its framework must match the selected guide's framework sequence.
 The YAML's `input` must resolve to one target-schema JSON (or a directory containing
 exactly one). Relative paths resolve against the original YAML's directory.
 
-All inputs, the target template (when enabled), and the existing MSA cache must
-be visible inside the container. Place them under POSE_WORK, or add their actual
-parent directories as read-only binds. Symlinks alone do not make external paths
-visible. For example:
+Inputs under the managed NOMINEE installation parent (including run directories and the MSA cache) are now mounted automatically, read-only. Only source files outside this parent and POSE_WORK need manual read-only binds. For example:
 
 ```bash
 export POSE_EXTRA_BINDS="/absolute/source-run:/absolute/source-run:ro,/absolute/msa-cache:/absolute/msa-cache:ro"
 RUN="$POSE_SOURCE/experiments/pose_guidance/container.sh"
 
 bash "$RUN" prepare \
-  --base-config /absolute/source-run/design.yaml \
+  --base-config /absolute/source-run/promera/promera_batch_1.yaml \
   --pose /absolute/source-run/selected-refold.cif \
   --msa-dir /absolute/msa-cache \
   --out "$POSE_WORK/smoke" \
@@ -143,7 +205,7 @@ available when needed:
 # Runtime target chains K and Z correspond to guide chains L and M.
 # The selected guide binder is N; the runtime binder is defined by the base YAML.
 bash "$RUN" prepare \
-  --base-config /absolute/source-run/design.yaml \
+  --base-config /absolute/source-run/promera/promera_batch_1.yaml \
   --pose /absolute/source-run/selected-refold.cif \
   --guide-binder-chain N --target-map '{"K":"L","Z":"M"}' \
   --msa-dir /absolute/msa-cache --out "$POSE_WORK/smoke-renamed" --profile smoke
@@ -191,11 +253,12 @@ Then prepare a new pilot directory from the same source inputs:
 
 ```bash
 bash "$RUN" prepare \
-  --base-config /absolute/source-run/design.yaml \
+  --base-config /absolute/source-run/promera/promera_batch_1.yaml \
   --pose /absolute/source-run/selected-refold.cif \
-  --msa-dir /absolute/msa-cache --out "$POSE_WORK/pilot" --profile pilot
+  --msa-dir /absolute/msa-cache --out "$POSE_WORK/pilot" --profile pilot \
+  --angle-range 15:35
 export POSE_EXPERIMENT="$POSE_WORK/pilot"
-sbatch --array=0-14%2 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
+sbatch --array=0-17%2 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
 # After all jobs finish:
 bash "$RUN" analyse --experiment "$POSE_WORK/pilot"
 ```
@@ -215,9 +278,7 @@ instead of `container.sh`; the experiment directory must be on PYTHONPATH for
 ## Results and interpretation
 
 `analysis/structures.csv` records generated backbones and every available refold,
-including low-confidence and wrong-pose outputs. It separates approach direction,
-full body rotation (including twist), centroid displacement, framework internal
-RMSD and target-alignment RMSD. Each refold's self-consistency compares it with
+including low-confidence and wrong-pose outputs. It separates requested guidance deviation and recovered approach direction, full body rotation, centroid displacement, antigen-patch radius change, framework internal RMSD and target-alignment RMSD. Each refold's self-consistency compares it with
 its **own generated backbone**, not with the original selected guide.
 The source approach axis is fixed once and transported by a framework rigid fit;
 it is not redefined from each newly generated CDR centroid.
@@ -229,9 +290,7 @@ matched-backbone yield and geometry/self-consistency-qualified sequences.
 and runtime versions. `pose_guidance.json` records the actual conditioned pairs,
 bins, distances, jitter seed and batch seed for each backbone.
 
-The exploratory geometry definition is saved before generation: approach change
-<=25 degrees, centroid displacement <=6 A, internal framework RMSD <=2 A and
-target-alignment RMSD <=3 A. Refold export additionally requires target-aligned
+With no angle range, the legacy geometry comparison remains source-relative (approach change <=25 degrees, centroid shift <=6 A). With --angle-range MIN:MAX, the measured approach must be within MIN:MAX, and target-patch radial distance may change <=6 A; absolute centroid shift is reported but not used as a veto. Both require internal framework RMSD <=2 A and target-fit RMSD <=3 A. Refold export additionally requires target-aligned
 whole-binder C-alpha RMSD <=6 A versus its own generated backbone. These are pilot
 analysis settings, **not calibrated biological cutoffs or production priority gates**.
 There is no iPTM threshold in this export. Raw scDockQ is retained as JSON rather

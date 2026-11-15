@@ -407,6 +407,7 @@ def test_launcher_discovers_managed_image_and_assets(tmp_path):
     (asset_release / "checkpoints").mkdir(parents=True)
     (asset_release / "checkpoints/promera_2606.ckpt").write_text("synthetic checkpoint")
     (asset_release.parent.parent / "current").symlink_to("releases/release42")
+    (parent / ".nominee/cache/promera/msa").mkdir(parents=True)
     config = config_dir / "config.yaml"
     config.write_text('paths:\n  installation_parent: "$POSE_TEST_PARENT"  # site root\n')
     work = tmp_path / "experiment work"
@@ -430,6 +431,8 @@ def test_launcher_discovers_managed_image_and_assets(tmp_path):
     argv = capture.read_text().splitlines()
     assert str(image_release) in argv
     assert any(str(asset_release) + ":/opt/nominee/assets:ro" in arg for arg in argv)
+    assert any(str(parent) + ":" + str(parent) + ":ro" in arg for arg in argv)
+    assert any(str(parent / ".nominee/cache") + ":/opt/nominee/cache:ro" in arg for arg in argv)
     assert "Promera image:" in result.stderr
     assert not list((work / ".tmp").iterdir())
 
@@ -471,3 +474,126 @@ def test_nominee_config_validation_without_host_yaml(tmp_path):
                             capture_output=True, text=True, env=env)
     assert result.returncode != 0
     assert "undefined environment variable" in result.stderr
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("0:0", (0.0, 0.0)), ("0:25", (0.0, 25.0)),
+    ("15:35", (15.0, 35.0)), ("180:180", (180.0, 180.0)),
+])
+def test_parse_direct_angle_interval(text, expected):
+    assert experiment.parse_angle_range(text) == expected
+
+
+@pytest.mark.parametrize("text", ["15", "35:15", "-1:20", "15:181", "NaN:10", "10:inf", "foo:bar"])
+def test_invalid_direct_angle_interval_rejected(text):
+    with pytest.raises(ValueError):
+        experiment.parse_angle_range(text)
+
+
+@pytest.mark.parametrize("lo,hi", [(0, 0), (0, 25), (15, 35), (40, 70), (150, 180)])
+def test_direct_angle_cone_is_rigid_and_measurably_in_range(lo, hi):
+    _, _, plan = fixtures()
+    reference_target = np.asarray(plan['target_coords'])
+    reference_fw = np.asarray(plan['source_framework_coords'])
+    patch = reference_target[plan['target_landmarks']].mean(0)
+    for seed in range(32):
+        changed, draw = g.cone_placement(
+            reference_fw, plan['source_axis'], seed, lo, hi,
+            translation=0.0, pivot=patch,
+        )
+        value = draw['guide_approach_deviation_degrees']
+        assert lo - 1e-5 <= value <= hi + 1e-5
+        np.testing.assert_allclose(
+            np.linalg.norm(changed[:, None] - changed[None, :], axis=-1),
+            np.linalg.norm(reference_fw[:, None] - reference_fw[None, :], axis=-1),
+            atol=1e-10,
+        )
+        measured = g.pose_metrics(
+            reference_target, reference_fw, reference_target, changed,
+            plan['source_axis'], target_patch_center=patch,
+        )
+        assert measured['approach_degrees'] == pytest.approx(value, abs=1e-5)
+        assert measured['patch_radius_change_angstrom'] == pytest.approx(0, abs=1e-9)
+        assert measured['framework_internal_rmsd'] == pytest.approx(0, abs=1e-9)
+        if seed == 0:
+            np.testing.assert_array_equal(
+                changed, g.cone_placement(reference_fw, plan['source_axis'], seed, lo, hi, 0, pivot=patch)[0]
+            )
+
+
+def angular_fixture(prepared, *, interval="15:35", translation=0.0):
+    args = argparse.Namespace(
+        base_config=str(prepared.parent / 'base.yaml'),
+        pose=str(prepared.parent / 'guide.cif'),
+        guide_binder_chain='N', target_map='{"K":"L"}',
+        msa_dir=None, out=str(prepared.parent / 'angle-experiment'),
+        backbones=None, replicates=None, batch_size=1,
+        profile='smoke', seed=100, inverse_folder='boltzif',
+        sequences_per_backbone=1, angle_range=interval,
+        angle_translation_angstrom=translation,
+    )
+    experiment.prepare(args)
+    return Path(args.out)
+
+
+def test_prepare_angle_range_separate_generation_arm(prepared):
+    root = angular_fixture(prepared)
+    manifest = experiment.load_json(root / 'manifest.json')
+    assert [job['arm'] for job in manifest['jobs']] == ['control', 'anchors16', 'cone16']
+    assert manifest['selection']['approach_degrees_min'] == 15
+    assert manifest['selection']['approach_degrees_max'] == 35
+    assert manifest['selection']['position_comparison'] == 'target_patch_radius'
+    _, cfg, _ = experiment.job_config(root, 2)
+    assert list(cfg.pose_guidance.approach_angle_range_degrees) == [15, 35]
+    assert cfg.pose_guidance.pairs == 16
+    assert cfg.binder.framework_template is None
+
+
+def test_target_relative_angular_guide_is_passed_to_design(task_module, prepared):
+    module, collator = task_module
+    root = angular_fixture(prepared, translation=1.5)
+    _, cfg, _ = experiment.job_config(root, 2)
+    task = module.PoseGuidedDesign(cfg)
+    task.features = [synthetic_features(SEQ, 0), synthetic_features(SEQ.replace('GG', 'GGGG'), 1)]
+    features = [task[0], task[1]]
+    for item in features:
+        record = item['pose_record']
+        assert record['guide_sampling_policy'] == 'uniform_solid_angle'
+        assert record['guide_pivot'] == 'antigen_patch_centroid'
+        assert 15 - 1e-5 <= record['guide_approach_deviation_degrees'] <= 35 + 1e-5
+        assert record['guide_translation_angstrom'] <= 1.5
+        assert record['approach_angle_range_degrees'] == [15, 35]
+        assert item['distogram_mask'].sum() == 32
+    padded = collator.collate(features, token_multiple=8)
+    assert padded['distogram_mask'].shape[-1] == padded['restype'].shape[-1]
+
+
+def test_angle_family_evaluation_allows_expected_centroid_movement():
+    metrics = {'approach_degrees': 29, 'centroid_shift_angstrom': 12,
+               'patch_radius_change_angstrom': 0.2, 'framework_internal_rmsd': 0.1,
+               'target_fit_rmsd': 0.1}
+    thresholds = {'approach_degrees_min': 15, 'approach_degrees_max': 35,
+                  'position_comparison': 'target_patch_radius',
+                  'patch_radius_change_angstrom_max': 6,
+                  'centroid_shift_angstrom_max': 6,
+                  'framework_internal_rmsd_max': 2, 'target_fit_rmsd_max': 3}
+    assert experiment._passes_geometry(metrics, thresholds)
+    assert not experiment._passes_geometry(dict(metrics, approach_degrees=5), thresholds)
+    assert not experiment._passes_geometry(dict(metrics, approach_degrees=50), thresholds)
+    assert not experiment._passes_geometry(
+        dict(metrics, patch_radius_change_angstrom=7), thresholds
+    )
+
+
+def test_current_nominee_multichain_and_symmetry_options_survive_prepare(prepared):
+    base = prepared.parent / 'base.yaml'
+    cfg = json.loads(base.read_text())
+    cfg['antigen_symmetry'] = {'group': 'C1', 'units': [], 'site_policy': 'equivalent_sites'}
+    cfg['antigen_symmetry_validation'] = {'status': 'valid'}
+    cfg['epitope_residue_map'] = {'K': [2, 3]}
+    base.write_text(json.dumps(cfg))
+    root = angular_fixture(prepared)
+    _, generated, _ = experiment.job_config(root, 2)
+    assert generated.antigen_symmetry.group == 'C1'
+    assert generated.antigen_symmetry_validation.status == 'valid'
+    assert list(generated.epitope_residue_map.K) == [2, 3]

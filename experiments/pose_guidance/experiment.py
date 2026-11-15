@@ -30,6 +30,39 @@ ARMS = [('control', 0, 0, 0), ('anchors4', 4, 0, 0), ('anchors8', 8, 0, 0),
         ('anchors16', 16, 0, 0), ('nearby16', 16, 15, 2)]
 
 
+def parse_angle_range(value: str | None) -> tuple[float, float] | None:
+    """Parse explicit [min, max] deviation from the selected approach axis."""
+    if value is None:
+        return None
+    parts = value.strip().split(':')
+    if len(parts) != 2:
+        raise ValueError('use --angle-range MIN:MAX, e.g. 15:35')
+    try:
+        low, high = (float(v) for v in parts)
+    except ValueError as exc:
+        raise ValueError('approach angle bounds must be numbers in degrees') from exc
+    if not np.isfinite([low, high]).all() or not 0 <= low <= high <= 180:
+        raise ValueError('approach angle range must satisfy 0 <= min <= max <= 180')
+    return low, high
+
+
+def _passes_geometry(metrics: dict[str, float], bounds: dict[str, float]) -> bool:
+    """Evaluate measured output in the requested cone, not only an upper limit."""
+    angle = metrics['approach_degrees']
+    if bounds.get('position_comparison') == 'target_patch_radius':
+        radial_change = metrics.get('patch_radius_change_angstrom')
+        position_pass = radial_change is not None and radial_change <= bounds['patch_radius_change_angstrom_max']
+    else:
+        position_pass = metrics['centroid_shift_angstrom'] <= bounds['centroid_shift_angstrom_max']
+    return (
+        bounds.get('approach_degrees_min', 0) - 1e-5 <= angle
+        <= bounds['approach_degrees_max'] + 1e-5
+        and position_pass
+        and metrics['framework_internal_rmsd'] <= bounds['framework_internal_rmsd_max']
+        and metrics['target_fit_rmsd'] <= bounds['target_fit_rmsd_max']
+    )
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + '.tmp')
@@ -82,7 +115,15 @@ def prepare(args: argparse.Namespace) -> None:
     replicates = args.replicates if args.replicates is not None else (1 if args.profile == 'smoke' else 3)
     if min(n, replicates, args.batch_size, args.sequences_per_backbone) < 1 or not 0 <= args.seed < 2**32 - replicates:
         raise ValueError('invalid budget, batch size or replicate seed')
-    selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else ARMS
+    interval = parse_angle_range(getattr(args, 'angle_range', None))
+    angle_shift = float(getattr(args, 'angle_translation_angstrom', 0.0))
+    if not np.isfinite(angle_shift) or angle_shift < 0:
+        raise ValueError('angle translation bound must be finite and nonnegative')
+    if interval is None and angle_shift:
+        raise ValueError('--angle-translation-angstrom requires --angle-range')
+    selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else list(ARMS)
+    if interval is not None:
+        selected_arms.append(('cone16', 16, 0, angle_shift))
     # Validate paths before creating the experiment tree.
     target_template = cfg.get('target_template')
     if target_template:
@@ -117,6 +158,8 @@ def prepare(args: argparse.Namespace) -> None:
                 'pairs': pairs, 'rotation_degrees': angle, 'translation_angstrom': shift,
                 'seed': args.seed + rep,
             }
+            if label == 'cone16':
+                job_cfg['pose_guidance']['approach_angle_range_degrees'] = list(interval)
             path = root / 'configs' / f'{len(jobs):03d}_{label}_rep{rep}.json'
             write_json(path, job_cfg)  # JSON is also valid YAML for OmegaConf.
             jobs.append({'index': len(jobs), 'arm': label, 'replicate': rep,
@@ -128,9 +171,16 @@ def prepare(args: argparse.Namespace) -> None:
         'guide_sha256': digest(inputs / 'guide.cif'),
         'target_sha256': digest(inputs / 'target.json'),
         'target_template_sha256': digest(inputs / 'target_template.cif') if target_template else None,
-        'selection': {'approach_degrees_max': 25, 'centroid_shift_angstrom_max': 6,
-                      'framework_internal_rmsd_max': 2, 'self_binder_rmsd_max': 6, 'target_fit_rmsd_max': 3},
-        'selection_note': 'Exploratory geometry criteria, not validated binding or production shortlist gates.',
+        'selection': {'approach_degrees_min': interval[0] if interval else 0,
+                      'approach_degrees_max': interval[1] if interval else 25,
+                      'position_comparison': 'target_patch_radius' if interval else 'source_centroid_shift',
+                      'centroid_shift_angstrom_max': 6,
+                      'patch_radius_change_angstrom_max': 6,
+                      'framework_internal_rmsd_max': 2, 'self_binder_rmsd_max': 6,
+                      'target_fit_rmsd_max': 3},
+        'angular_reference': 'deviation_from_selected_source_CDR_to_framework_axis_after_target_alignment',
+        'angle_range_requested_degrees': list(interval) if interval else None,
+        'selection_note': 'Generation-guidance range is a preference. Evaluate actual unrestrained output in the same interval; these are not validated binding cutoffs.',
         'framework_template_disabled': True, 'refolds_unrestrained': True,
         'budget_note': 'Five diffusion samples per designed sequence; these share a trunk evaluation.',
         'script_sha256': {p.name: digest(p) for p in HERE.iterdir()
@@ -169,7 +219,11 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
     from pose_task import PoseGuidedDesign
 
     if cfg.inverse_folder.type == 'boltzif' and not hasattr(design, 'boltz_if'):
-        raise ValueError('this runtime lacks the NOMINEE Boltz-IF adapter; use the existing patched image, not a raw checkout')
+        raise ValueError('this runtime lacks the NOMINEE Boltz-IF adapter; use the current patched NOMINEE image')
+    if cfg.get('antigen_symmetry') is not None and not callable(getattr(design, 'evaluate_cofold_symmetry', None)):
+        raise ValueError('this image lacks the current NOMINEE declared-symmetry patch; repair the Promera image through dev')
+    if len(cfg.get('target_chains') or []) > 1 and 'antigen_chains' not in inspect.signature(design.compute_dockq).parameters:
+        raise ValueError('this image lacks the current NOMINEE multichain-antigen patch; repair the Promera image through dev')
     if require_gpu and not torch.cuda.is_available():
         raise ValueError('no CUDA GPU visible; run the GPU stage inside a SLURM GPU allocation')
     task = PoseGuidedDesign(cfg)
@@ -189,6 +243,7 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               'design_sha256': digest(inspect.getfile(design)), 'weights': str(weights),
               'weights_size': weights.stat().st_size,
               'featurized_items': len(features), 'pair_count': int(cfg.pose_guidance.pairs),
+              'requested_approach_angle_range_degrees': cfg.pose_guidance.get('approach_angle_range_degrees'),
               'inverse_folder': cfg.inverse_folder.type,
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
               'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT')}
@@ -244,6 +299,7 @@ def analyse(root: Path) -> None:
     if digest(root / 'plan.json') != manifest['plan_sha256']:
         raise ValueError('pose plan changed')
     threshold = manifest['selection']
+    patch_center = np.asarray(plan['target_coords'], dtype=float)[plan['target_landmarks']].mean(0)
     rows, totals, exports, errors = [], [], {}, []
     runtime_reference = None
     for job in manifest['jobs']:
@@ -270,27 +326,30 @@ def analyse(root: Path) -> None:
             total['generated_backbones'] += 1
             try:
                 bt, bf, bb = observed_arrays(read_chains(backbone), plan)
-                bm = pose_metrics(plan['target_coords'], plan['source_framework_coords'], bt, bf, plan['source_axis'])
-                backbone_match = (bm['approach_degrees'] <= threshold['approach_degrees_max']
-                                  and bm['centroid_shift_angstrom'] <= threshold['centroid_shift_angstrom_max']
-                                  and bm['framework_internal_rmsd'] <= threshold['framework_internal_rmsd_max']
-                                  and bm['target_fit_rmsd'] <= threshold['target_fit_rmsd_max'])
+                bm = pose_metrics(plan['target_coords'], plan['source_framework_coords'], bt, bf,
+                                  plan['source_axis'], target_patch_center=patch_center)
+                backbone_match = _passes_geometry(bm, threshold)
+                guidance_file = backbone.parent / 'pose_guidance.json'
+                guidance = load_json(guidance_file) if guidance_file.is_file() else {}
+                guide_fields = {
+                    'guide_approach_deviation_degrees': guidance.get('guide_approach_deviation_degrees'),
+                    'guide_azimuth_degrees': guidance.get('guide_azimuth_degrees'),
+                    'guide_sampling_policy': guidance.get('guide_sampling_policy'),
+                }
                 total['matched_backbones'] += int(backbone_match)
                 rows.append(dict(arm=job['arm'], replicate=job['replicate'], kind='backbone',
-                                 cif=str(backbone), geometry_match=backbone_match, **bm))
+                                 cif=str(backbone), geometry_match=backbone_match, **guide_fields, **bm))
                 for confidence_path in sorted((backbone.parent / 'refolds').glob('*_confidence.json')):
                     total['refolds'] += 1
                     cif = confidence_path.with_name(confidence_path.name.replace('_confidence.json', '.cif'))
                     try:
                         chains = read_chains(cif)
                         rt, rf, rb = observed_arrays(chains, plan)
-                        metrics = pose_metrics(plan['target_coords'], plan['source_framework_coords'], rt, rf, plan['source_axis'])
+                        metrics = pose_metrics(plan['target_coords'], plan['source_framework_coords'], rt, rf,
+                                               plan['source_axis'], target_patch_center=patch_center)
                         rotation, translation = align(rt, bt)
                         self_rmsd = rmsd(rb @ rotation + translation, bb)
-                        geometry_match = (metrics['approach_degrees'] <= threshold['approach_degrees_max']
-                                          and metrics['centroid_shift_angstrom'] <= threshold['centroid_shift_angstrom_max']
-                                          and metrics['framework_internal_rmsd'] <= threshold['framework_internal_rmsd_max']
-                                          and metrics['target_fit_rmsd'] <= threshold['target_fit_rmsd_max'])
+                        geometry_match = _passes_geometry(metrics, threshold)
                         eligible = geometry_match and self_rmsd <= threshold['self_binder_rmsd_max']
                         confidence = load_json(confidence_path)
                         iptm = confidence.get('complex_iptm')
@@ -300,7 +359,7 @@ def analyse(root: Path) -> None:
                         row = dict(arm=job['arm'], replicate=job['replicate'], kind='refold', cif=str(cif),
                                    sequence=sequence, iptm=iptm, scDockQ_json=json.dumps(confidence.get('scDockQ')),
                                    self_binder_rmsd=self_rmsd, geometry_match=geometry_match,
-                                   geometry_and_self_consistency=eligible, **metrics)
+                                   geometry_and_self_consistency=eligible, **guide_fields, **metrics)
                         rows.append(row)
                         if eligible:
                             total['geometry_matched_refolds'] += 1
@@ -320,17 +379,22 @@ def analyse(root: Path) -> None:
         total['missing_refolds_from_sequences'] = max(0, total['expected_refolds_from_sequences'] - total['refolds'])
         total['missing_backbones'] = job['requested_backbones'] - total['generated_backbones']
         total['geometry_yield_per_requested_backbone'] = total['matched_backbones'] / job['requested_backbones']
+        total['evaluated_angle_min_degrees'] = threshold.get('approach_degrees_min', 0)
+        total['evaluated_angle_max_degrees'] = threshold['approach_degrees_max']
         totals.append(total)
     destination = root / 'analysis'
     destination.mkdir(exist_ok=True)
     write_csv(destination / 'structures.csv', rows, ['arm', 'replicate', 'kind', 'cif', 'sequence', 'iptm',
         'scDockQ_json', 'target_fit_rmsd', 'source_framework_rmsd', 'framework_internal_rmsd',
-        'centroid_shift_angstrom', 'body_rotation_degrees', 'approach_degrees', 'self_binder_rmsd',
+        'centroid_shift_angstrom', 'patch_radius_change_angstrom', 'body_rotation_degrees', 'approach_degrees',
+        'guide_approach_deviation_degrees', 'guide_azimuth_degrees', 'guide_sampling_policy',
+        'self_binder_rmsd',
         'geometry_match', 'geometry_and_self_consistency'])
     write_csv(destination / 'conditions.csv', totals, ['index', 'arm', 'replicate', 'status', 'requested_backbones',
         'generated_backbones', 'missing_backbones', 'matched_backbones', 'geometry_yield_per_requested_backbone',
         'designed_sequences', 'expected_refolds_from_sequences', 'refolds', 'missing_refolds_from_sequences',
-        'geometry_matched_refolds', 'unique_matched_sequences', 'wall_seconds'])
+        'geometry_matched_refolds', 'unique_matched_sequences',
+        'evaluated_angle_min_degrees', 'evaluated_angle_max_degrees', 'wall_seconds'])
     write_csv(destination / 'protenix_inputs.csv', list(exports.values()),
               ['name', 'sequence', 'promera_reference_cif', 'arm', 'replicate', 'iptm'])
     write_json(destination / 'errors.json', errors)
@@ -351,6 +415,10 @@ def main() -> None:
     prep.add_argument('--msa-dir')
     prep.add_argument('--out', required=True)
     prep.add_argument('--profile', choices=['smoke', 'pilot'], default='smoke')
+    prep.add_argument('--angle-range', metavar='MIN:MAX',
+                      help='source-relative angular guidance interval in degrees (e.g. 15:35)')
+    prep.add_argument('--angle-translation-angstrom', type=float, default=0.0,
+                      help='maximum rigid translation of the angular guide (default: 0)')
     prep.add_argument('--backbones', type=int)
     prep.add_argument('--replicates', type=int)
     prep.add_argument('--batch-size', type=int, default=1)

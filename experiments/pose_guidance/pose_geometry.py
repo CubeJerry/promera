@@ -99,6 +99,74 @@ def jitter(coords: Any, seed: int, degrees: float, translation: float) -> np.nda
     return (arr - arr.mean(0)) @ rotation.T + arr.mean(0) + shift
 
 
+def cone_placement(
+    coords: Any,
+    source_axis: Any,
+    seed: int,
+    min_degrees: float,
+    max_degrees: float,
+    translation: float = 0.0,
+    pivot: Any | None = None,
+) -> tuple[np.ndarray, dict[str, float | str]]:
+    """Sample a target-relative approach cone around the selected source axis.
+
+    Polar deviation is uniformly distributed in solid angle, not in degrees;
+    azimuth is uniform. No atom-wise noise or framework-template conditioning.
+    The guide is a *soft* conditioning input, never a guarantee of output angle.
+    """
+    arr = xyz(coords)
+    axis = np.asarray(source_axis, dtype=float)
+    if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-6:
+        raise ValueError("source approach axis must be finite and nonzero")
+    if not (
+        np.isfinite([min_degrees, max_degrees, translation]).all()
+        and 0 <= min_degrees <= max_degrees <= 180
+        and translation >= 0
+    ):
+        raise ValueError("invalid approach-angle interval or translation bounds")
+    source = axis / np.linalg.norm(axis)
+    rng = np.random.default_rng(seed)
+    cos_min = np.cos(np.deg2rad(max_degrees))
+    cos_max = np.cos(np.deg2rad(min_degrees))
+    theta = float(np.arccos(np.clip(rng.uniform(cos_min, cos_max), -1, 1)))
+    azimuth = float(rng.uniform(0, 2 * np.pi))
+    basis = np.zeros(3)
+    basis[int(np.argmin(np.abs(source)))] = 1.0
+    u = np.cross(source, basis)
+    u /= np.linalg.norm(u)
+    v = np.cross(source, u)
+    desired = (
+        np.cos(theta) * source
+        + np.sin(theta) * (np.cos(azimuth) * u + np.sin(azimuth) * v)
+    )
+    rotation_axis = np.cross(source, desired)
+    magnitude = np.linalg.norm(rotation_axis)
+    rotation_axis = u if magnitude < 1e-8 else rotation_axis / magnitude
+    x, y, z = rotation_axis
+    skew = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
+    rotation = np.eye(3) + np.sin(theta) * skew + (1 - np.cos(theta)) * (skew @ skew)
+    shift = np.zeros(3)
+    if translation:
+        direction = rng.normal(size=3)
+        direction /= np.linalg.norm(direction)
+        shift = direction * translation * rng.random() ** (1 / 3)
+    center = arr.mean(0) if pivot is None else np.asarray(pivot, dtype=float)
+    if center.shape != (3,) or not np.isfinite(center).all():
+        raise ValueError("pose rotation pivot must be a finite xyz point")
+    transformed = (arr - center) @ rotation.T + center + shift
+    # Record the actual geometric deviation, not merely the requested draw.
+    achieved = np.rad2deg(
+        np.arccos(np.clip(source @ (rotation @ source), -1, 1))
+    )
+    return transformed, {
+        "guide_approach_deviation_degrees": float(achieved),
+        "guide_azimuth_degrees": float(np.rad2deg(azimuth)),
+        "guide_translation_angstrom": float(np.linalg.norm(shift)),
+        "guide_sampling_policy": "uniform_solid_angle",
+        "guide_pivot": "framework_centroid" if pivot is None else "antigen_patch_centroid",
+    }
+
+
 def cross_distogram(
     n_tokens: int, target_tokens: list[int], binder_tokens: list[int],
     target_xyz: Any, binder_xyz: Any, count: int,
@@ -171,7 +239,8 @@ def rmsd(first: Any, second: Any) -> float:
 
 
 def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
-                 observed_fw: Any, reference_axis: Any) -> dict[str, float]:
+                 observed_fw: Any, reference_axis: Any,
+                 target_patch_center: Any | None = None) -> dict[str, float]:
     """Separate internal shape, body rotation, approach direction and displacement."""
     rt, rf, ot, of = map(xyz, (reference_target, reference_fw, observed_target, observed_fw))
     rotation, shift = align(ot, rt)
@@ -181,7 +250,17 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
     if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-6:
         raise ValueError('reference approach axis is undefined')
     axis = axis / np.linalg.norm(axis)
+    radial_change = None
+    if target_patch_center is not None:
+        pivot = np.asarray(target_patch_center, dtype=float)
+        if pivot.shape != (3,) or not np.isfinite(pivot).all():
+            raise ValueError('target patch center is not finite xyz')
+        radial_change = float(abs(
+            np.linalg.norm(fw.mean(0) - pivot)
+            - np.linalg.norm(rf.mean(0) - pivot)
+        ))
     return {
+        'patch_radius_change_angstrom': radial_change,
         'target_fit_rmsd': rmsd(ot @ rotation + shift, rt),
         'source_framework_rmsd': rmsd(fw, rf),
         'framework_internal_rmsd': rmsd(rf @ body_rotation + body_shift, fw),

@@ -41,12 +41,28 @@ printf 'Promera image: %s\nPromera assets: %s\n' "$IMAGE" "$ASSETS" >&2
 mkdir -p "$WORK/.cache/torch" "$WORK/.cache/triton" "$WORK/.tmp"
 TEMP=$(mktemp -d "$WORK/.tmp/pose-guide.XXXXXX")
 trap 'rm -rf -- "$TEMP"' EXIT
-binds="$HERE:/opt/pose_guidance:ro,$WORK:$WORK,$ASSETS:/opt/nominee/assets:ro"
+
+# Latest NOMINEE keeps prepared run schemas and MSA caches under the managed
+# installation parent, outside the pose experiment's writable output directory.
+# Make the parent readable but keep the experiment workspace separately writable.
+binds="$HERE:/opt/pose_guidance:ro"
+if [[ -n "${discovered:-}" ]]; then
+    parent="${managed_paths[0]%/.nominee/images/promera/current.sif}"
+    [[ -n "$parent" && "$parent" != "${managed_paths[0]}" && -d "$parent" ]] || {
+        echo "ERROR: could not resolve managed installation parent from $config" >&2
+        exit 2
+    }
+    binds+=",$parent:$parent:ro"
+    if [[ -d "$parent/.nominee/cache" ]]; then
+        binds+=",$parent/.nominee/cache:/opt/nominee/cache:ro"
+    fi
+fi
+binds+=",$WORK:$WORK:rw,$ASSETS:/opt/nominee/assets:ro"
 if [[ -d "$ASSETS/ligandmpnn/model_params" ]]; then
     binds+=",$ASSETS/ligandmpnn/model_params:/opt/nominee/component/LigandMPNN/model_params:ro"
 fi
 if [[ -n "${POSE_EXTRA_BINDS:-}" ]]; then binds+=",$POSE_EXTRA_BINDS"; fi
-args=(exec --cleanenv --bind "$binds" --pwd "$WORK")
+args=(exec --cleanenv --no-home --no-mount home,cwd --bind "$binds" --pwd "$WORK")
 # CPU preparation and analysis do not require a GPU allocation.
 if [[ "${1:-}" == run ]]; then args+=(--nv); fi
 for var in CUDA_VISIBLE_DEVICES SLURM_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_TASK SLURM_NTASKS_PER_NODE SLURM_NNODES SLURM_NTASKS SLURM_PROCID SLURM_LOCALID SLURM_NODEID; do
