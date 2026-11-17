@@ -721,3 +721,12 @@ def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
     atlas.launch(args)
     assert "DRY RUN" in capsys.readouterr().out
     assert not list((tmp_path / "test-work").iterdir())
+
+
+def test_milton_gpuq_explicitly_requests_one_a30():
+    """The one-command atlas launcher submits this exact SLURM script."""
+    script = Path(__file__).with_name("run.slurm").read_text()
+    assert "#SBATCH --partition=gpuq" in script
+    assert "#SBATCH --gres=gpu:A30:1" in script
+    assert "#SBATCH --time=12:00:00" in script
+    assert "#SBATCH --gres=gpu:1\n" not in script

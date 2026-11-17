@@ -42,7 +42,8 @@ output. It creates a new timestamped experiment; the old run is read only.
 
 It verifies the exact source record and SHA-256, prepares three conditions,
 runs three *real runtime* CPU featurization/preflight checks, then submits a
-sequential SLURM array (`0-2%1`) only if every check succeeds. Six backbones
+sequential SLURM array (`0-2%1`) only if every check succeeds. Each job
+requests `--partition=gpuq --gres=gpu:A30:1` and 12 hours of walltime. Six backbones
 and up to 30 unconstrained Promera refolds are requested in total.
 No GPU model execution is performed on the login node.
 
@@ -103,7 +104,7 @@ done
 
 export POSE_EXPERIMENT="$POSE_WORK/angle-smoke-15-35"
 cd "$POSE_WORK"
-sbatch --array=0-2%1 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
+sbatch --partition=gpuq --gres=gpu:A30:1 --array=0-2%1 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
 # After all three array jobs finish:
 bash "$RUN" analyse --experiment "$POSE_WORK/angle-smoke-15-35"
 ```
@@ -291,7 +292,7 @@ cd "$POSE_WORK"
 sbatch --array=0-1%1 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
 ```
 
-The SLURM file requests one GPU on `gpuq`, four CPUs and 48 GB host memory.
+The SLURM file requests **one A30 GPU** on `gpuq` (`--gres=gpu:A30:1`), four CPUs, 48 GB host memory and 12 hours per array task.
 Change resource requests to fit the target and cluster. It does not submit
 anything when cloned or prepared. Do not launch the model on a login node.
 
@@ -315,7 +316,7 @@ bash "$RUN" prepare \
   --msa-dir /absolute/msa-cache --out "$POSE_WORK/pilot" --profile pilot \
   --angle-range 15:35
 export POSE_EXPERIMENT="$POSE_WORK/pilot"
-sbatch --array=0-17%2 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
+sbatch --partition=gpuq --gres=gpu:A30:1 --array=0-17%2 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
 # After all jobs finish:
 bash "$RUN" analyse --experiment "$POSE_WORK/pilot"
 ```
