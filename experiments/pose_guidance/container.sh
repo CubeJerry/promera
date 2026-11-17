@@ -38,7 +38,7 @@ ASSETS=$(readlink -f -- "$PROMERA_ASSETS")
 }
 printf 'Promera image: %s\nPromera assets: %s\n' "$IMAGE" "$ASSETS" >&2
 [[ ! -d "$WORK/promera" ]] || { echo 'ERROR: POSE_WORK must not be a Promera source checkout' >&2; exit 2; }
-mkdir -p "$WORK/.cache/torch" "$WORK/.cache/triton" "$WORK/.tmp"
+mkdir -p "$WORK/.cache/torch" "$WORK/.cache/triton" "$WORK/.cache/matplotlib" "$WORK/.tmp"
 TEMP=$(mktemp -d "$WORK/.tmp/pose-guide.XXXXXX")
 trap 'rm -rf -- "$TEMP"' EXIT
 
@@ -77,6 +77,6 @@ args+=(--env "NOMINEE_ASSET_ROOT=/opt/nominee/assets")
 args+=(--env "ABMPNN_CHECKPOINT=/opt/nominee/assets/checkpoints/abmpnn.pt")
 args+=(--env "LIGANDMPNN_DIR=/opt/nominee/component/LigandMPNN")
 args+=(--env "TMPDIR=$TEMP" --env "TORCHINDUCTOR_CACHE_DIR=$WORK/.cache/torch")
-args+=(--env "TRITON_CACHE_DIR=$WORK/.cache/triton" --env 'PROMERA_RECORD_TRAJECTORY=0')
+args+=(--env "TRITON_CACHE_DIR=$WORK/.cache/triton" --env "MPLCONFIGDIR=$WORK/.cache/matplotlib" --env 'PROMERA_RECORD_TRAJECTORY=0')
 args+=(--env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
 apptainer "${args[@]}" "$IMAGE" python /opt/pose_guidance/experiment.py "$@"

@@ -171,10 +171,14 @@ def cross_distogram(
     n_tokens: int, target_tokens: list[int], binder_tokens: list[int],
     target_xyz: Any, binder_xyz: Any, count: int,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
-    """Use a nested, coverage-balanced prefix of 16 undirected cross-chain pairs.
+    """Encode cross-chain distances using Promera's exact 51-bin convention.
 
-    Four pairs do not determine all six rigid-body degrees of freedom. Pair
-    count is an experimental variable, not a calibrated strength parameter.
+    The model is trained with torch.linspace(1, 50, 50) and a 51-entry
+    embedding table. Consequently bin 50 means *distance > 50 Angstrom*.
+    It is a valid training bin, but gives no finite-distance resolution.
+    Preserve every requested pair and record which guides overflow.
+    Reject a guide with inadequate finite cross-chain coverage instead of
+    silently discarding long-distance constraints or clipping coordinates.
     """
     target, binder = xyz(target_xyz), xyz(binder_xyz)
     if len(target_tokens) != 4 or len(binder_tokens) != 4 or target.shape != (4, 3) or binder.shape != (4, 3):
@@ -187,17 +191,48 @@ def cross_distogram(
     mask = np.zeros((n_tokens, n_tokens), dtype=bool)
     bins = np.zeros((n_tokens, n_tokens), dtype=np.int64)
     records = []
+    boundaries = np.linspace(1, 50, 50)
     order = [(i, (i + offset) % 4) for offset in range(4) for i in range(4)]
     for ti, bi in order[:count]:
         distance = float(np.linalg.norm(target[ti] - binder[bi]))
-        # Saturated overflow bins carry no finite-distance placement information.
-        if not 1 < distance < 50:
-            raise ValueError(f'anchor distance {distance:.3f} A is outside informative bins (1, 50)')
+        if not distance > 1.0:
+            raise ValueError(
+                f'cross-chain anchor C-alpha separation {distance:.3f} A is <= 1 A; '
+                'guide contains a physically implausible clash'
+            )
         t, b = target_tokens[ti], binder_tokens[bi]
-        bucket = int(np.sum(distance > np.linspace(1, 50, 50)))
+        bucket = int(np.sum(distance > boundaries))
+        overflow = bucket == 50
         mask[t, b] = mask[b, t] = True
         bins[t, b] = bins[b, t] = bucket
-        records.append({'target_token': t, 'binder_token': b, 'distance_angstrom': distance, 'bin': bucket})
+        records.append({
+            'target_token': t,
+            'binder_token': b,
+            'distance_angstrom': distance,
+            'bin': bucket,
+            'distance_overflow': overflow,
+            'finite_distance_information': not overflow,
+        })
+
+    # Bin 50 (>50 A) is valid model input, but cannot discriminate e.g. 52
+    # from 80 A. A guidance set dominated by overflow pairs would be
+    # scientifically uninterpretable, so require adequate non-overflow
+    # coverage on both the antigen and framework sides.
+    informative = [r for r in records if r['finite_distance_information']]
+    if count:
+        minimum = max(1, (count + 1) // 2)
+        minimum_axes = min(3, count)
+        n_target = len({r['target_token'] for r in informative})
+        n_binder = len({r['binder_token'] for r in informative})
+        if len(informative) < minimum or min(n_target, n_binder) < minimum_axes:
+            raise ValueError(
+                f'insufficient informative cross-chain anchors: {len(informative)}/{count} '
+                f'finite-distance pairs (required >= {minimum}); '
+                f'{n_target} antigen and {n_binder} binder landmarks '
+                f'(required >= {minimum_axes} each); '
+                f'{count - len(informative)} pairs are in the trained >50 A overflow bin. '
+                'Try a narrower approach-angle interval or a different source pose.'
+            )
     return bins, mask, records
 
 

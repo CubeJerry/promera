@@ -110,10 +110,19 @@ class PoseGuidedDesign(Design):
             np.asarray(self.plan['target_coords'])[self.plan['target_landmarks']],
             framework[self.plan['binder_landmarks']], int(self.guide.pairs))
         merge_distogram(feats, bins, mask)
+        informative_count = sum(bool(p['finite_distance_information']) for p in records)
+        overflow_count = len(records) - informative_count
         feats['pose_record'] = {
             'pairs': records, 'jitter_seed': seed,
             'generation_only': True, 'plan_sha256': self.guide.plan_sha256,
             'approach_angle_range_degrees': list(interval) if interval is not None else None,
+            'requested_guidance_pairs': len(records),
+            'informative_guidance_pairs': informative_count,
+            'overflow_guidance_pairs': overflow_count,
+            'maximum_anchor_distance_angstrom': max(
+                (float(p['distance_angstrom']) for p in records), default=None
+            ),
+            'distance_encoding': 'promera_51_bins_1_to_50_with_overflow',
             **guide_metadata,
         }
         return feats

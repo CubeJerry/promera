@@ -42,7 +42,10 @@ output. It creates a new timestamped experiment; the old run is read only.
 
 It verifies the exact source record and SHA-256, prepares three conditions,
 runs three *real runtime* CPU featurization/preflight checks, then submits a
-sequential SLURM array (`0-2%1`) only if every check succeeds. Each job
+sequential SLURM array (`0-2%1`) only if every check succeeds. The preflight
+JSON reports the number of finite-distance and overflow guide pairs for each
+proposed backbone, alongside the requested angle. A 52.481 A pair uses the
+trained overflow bin 50 and is not by itself a preflight failure. Each job
 requests `--partition=gpuq --gres=gpu:A30:1` and 12 hours of walltime. Six backbones
 and up to 30 unconstrained Promera refolds are requested in total.
 No GPU model execution is performed on the login node.
@@ -61,6 +64,33 @@ The requested `15:35` interval describes angular deviation from the selected
 reference approach axis, not from the antigen's local surface normal.
 This is soft generation conditioning; the measured angle in the free
 backbone/refold is separately recorded and can differ.
+
+## If an earlier angular smoke stopped in preflight
+
+The original B004/G047/5_389, 15–35 degree smoke failed at 52.481 A because
+the **experimental** code rejected every pair above 50 A, even though Promera
+has a valid overflow bin. That guard has been corrected. No SLURM job was
+submitted when that preflight stopped.
+
+**Do not reuse the previous half-prepared experiment folder.** Its manifest
+pins the previous code hashes; the launcher automatically creates a new,
+timestamped directory after you update the experimental Git checkout.
+The completed source run is never changed.
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance pull --ff-only
+module load apptainer
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 --angle-range 15:35
+```
+
+Preflight runs on CPU: a message about `libcuda.so.1` and
+`cuda_visible: false` is expected and is not evidence of a failed GPU job.
+The real array tasks use `--gres=gpu:A30:1` with `--nv` enabled.
+The experimental container now explicitly sets a writable
+`MPLCONFIGDIR` cache for clean Matplotlib initialization.
 
 ## Manual setup: angle-range generation on current NOMINEE main
 
@@ -147,9 +177,16 @@ Four spatially distributed framework landmarks and four target landmarks give
 16 possible undirected pairs. The target landmarks come from a 15 A patch around
 the target residue nearest the source CDR centroid. The framework landmarks avoid
 the terminal three residues. Landmarks and their ordinal mappings are saved.
-All supplied distances must fall strictly between 1 and 50 A; saturated bins
-fail instead of silently removing restraints. With some guides, this automatic
-landmark choice will fail. Inspect the guide/patch rather than weakening this check.
+Promera's training distogram uses 51 bins: finite distances through 50 A
+occupy bins 0-49, and distances **over 50 A** use the valid overflow bin 50.
+Some rotated VHH framework landmarks can legitimately exceed this boundary.
+The experiment now **retains and records overflow pairs** rather than rejecting
+valid bin-50 inputs, but fails if too few finite-distance pairs (at least half
+with coverage of three antigen and three binder landmarks) remain to provide
+interpretable angular guidance. C-alpha distances <=1 A still fail as likely
+steric clashes. Do not interpret a saturated bin as a precise distance.
+If the anchor-coverage guard fails, use a narrower angular range or inspect
+the selected reference geometry rather than silently weakening the guide.
 
 The normal inverse-folding and five-sample Promera refolding paths are reused.
 A runtime guard aborts if a refold contains nonzero distance conditioning or
@@ -339,7 +376,11 @@ instead of `container.sh`; the experiment directory must be on PYTHONPATH for
 including low-confidence and wrong-pose outputs. It separates requested guidance deviation and recovered approach direction, full body rotation, centroid displacement, antigen-patch radius change, framework internal RMSD and target-alignment RMSD. Each refold's self-consistency compares it with
 its **own generated backbone**, not with the original selected guide.
 The source approach axis is fixed once and transported by a framework rigid fit;
-it is not redefined from each newly generated CDR centroid.
+it is not redefined from each newly generated CDR centroid. Every backbone also
+records `requested_guidance_pairs`, `informative_guidance_pairs`,
+`overflow_guidance_pairs`, and `maximum_anchor_distance_angstrom`. These are
+carried into the per-structure CSV and real-runtime preflight diagnostics so
+angle enrichment is not confused with uninformative saturated input bins.
 
 `analysis/conditions.csv` reports each arm and replicate, requested/observed
 backbone counts, designed sequences, expected/observed refolds, missing outputs,

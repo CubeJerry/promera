@@ -111,6 +111,44 @@ def test_saturation_and_invalid_tokens_fail():
         g.cross_distogram(8, list(range(4)), list(range(4)), t, b, 4)
 
 
+def test_above_50_uses_trained_overflow_bin_and_retains_informative_pairs():
+    """52.481 A is a valid bin-50 input, not a reason to abort preflight."""
+    t, b = points()
+    b = b.copy()
+    b[0] = [t[0, 0], t[0, 1], 52.481]
+    bins, mask, records = g.cross_distogram(
+        8, list(range(4)), list(range(4, 8)), t, b, 16
+    )
+    assert mask.sum() == 32
+    assert len(records) == 16
+    assert any(p['distance_angstrom'] == pytest.approx(52.481) for p in records)
+    assert sum(p['distance_overflow'] for p in records) == 4
+    assert sum(p['finite_distance_information'] for p in records) == 12
+    assert all(p['bin'] == 50 for p in records if p['distance_overflow'])
+    assert all(0 <= p['bin'] <= 49 for p in records if p['finite_distance_information'])
+    assert np.array_equal(bins, bins.T)
+    assert np.array_equal(mask, mask.T)
+    for p in records:
+        actual_bin = int(np.sum(p['distance_angstrom'] > np.linspace(1, 50, 50)))
+        assert actual_bin == p['bin']
+
+
+def test_many_overflow_pairs_fail_with_explicit_geometry_diagnostic():
+    t, b = points()
+    b = b.copy()
+    b[:3] += [0, 0, 55]
+    with pytest.raises(ValueError, match='insufficient informative cross-chain anchors'):
+        g.cross_distogram(8, list(range(4)), list(range(4, 8)), t, b, 16)
+
+
+def test_colliding_cross_chain_ca_remains_invalid():
+    t, b = points()
+    b = b.copy()
+    b[0] = t[0]
+    with pytest.raises(ValueError, match='physically implausible clash'):
+        g.cross_distogram(8, list(range(4)), list(range(4, 8)), t, b, 16)
+
+
 def test_jitter_is_rigid_and_reproducible():
     _, b = points()
     first = g.jitter(b, 7, 15, 2)
@@ -258,7 +296,11 @@ def test_task_variable_cdrs_and_real_matrix_collation(task_module, prepared):
     features = [task[0], task[1]]
     for feat in features:
         assert feat['distogram_mask'].sum() == 32
-        for record in feat['pose_record']['pairs']:
+        pose_stats = feat['pose_record']
+        assert pose_stats['requested_guidance_pairs'] == 16
+        assert pose_stats['informative_guidance_pairs'] + pose_stats['overflow_guidance_pairs'] == 16
+        assert pose_stats['distance_encoding'] == 'promera_51_bins_1_to_50_with_overflow'
+        for record in pose_stats['pairs']:
             assert record['target_token'] >= len(feat['struct'].chains['V'].rname)
             assert record['binder_token'] < len(feat['struct'].chains['V'].rname)
     batch = collator.collate(features, token_multiple=8)
@@ -388,6 +430,8 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
     assert ('--nv' in args) is needs_gpu
     assert args[args.index('--pwd') + 1] == str(work)
     assert '/opt/pose_guidance/experiment.py' in args
+    assert any(v.startswith('MPLCONFIGDIR=') for v in args)
+    assert (work / '.cache/matplotlib').is_dir()
     assert not list((work / '.tmp').iterdir())
 
 

@@ -247,6 +247,17 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               'inverse_folder': cfg.inverse_folder.type,
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
               'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT')}
+    report['pose_anchor_diagnostics'] = [
+        {
+            'backbone_index': int(feat['backbone_idx']),
+            'requested_pairs': int(feat['pose_record']['requested_guidance_pairs']),
+            'informative_pairs': int(feat['pose_record']['informative_guidance_pairs']),
+            'overflow_pairs': int(feat['pose_record']['overflow_guidance_pairs']),
+            'max_distance_angstrom': feat['pose_record']['maximum_anchor_distance_angstrom'],
+            'guide_angle_degrees': feat['pose_record'].get('guide_approach_deviation_degrees'),
+        }
+        for feat in features
+    ]
     msa_paths = getattr(features[0]['struct'], 'msa_summary', {}).get('msa_path', {})
     report['target_msa_sha256'] = {name: digest(msa_paths[name]) for name in task.plan['target_sequences']
                                     if msa_paths.get(name) and Path(msa_paths[name]).is_file()}
@@ -335,6 +346,10 @@ def analyse(root: Path) -> None:
                     'guide_approach_deviation_degrees': guidance.get('guide_approach_deviation_degrees'),
                     'guide_azimuth_degrees': guidance.get('guide_azimuth_degrees'),
                     'guide_sampling_policy': guidance.get('guide_sampling_policy'),
+                    'requested_guidance_pairs': guidance.get('requested_guidance_pairs'),
+                    'informative_guidance_pairs': guidance.get('informative_guidance_pairs'),
+                    'overflow_guidance_pairs': guidance.get('overflow_guidance_pairs'),
+                    'maximum_anchor_distance_angstrom': guidance.get('maximum_anchor_distance_angstrom'),
                 }
                 total['matched_backbones'] += int(backbone_match)
                 rows.append(dict(arm=job['arm'], replicate=job['replicate'], kind='backbone',
@@ -388,6 +403,8 @@ def analyse(root: Path) -> None:
         'scDockQ_json', 'target_fit_rmsd', 'source_framework_rmsd', 'framework_internal_rmsd',
         'centroid_shift_angstrom', 'patch_radius_change_angstrom', 'body_rotation_degrees', 'approach_degrees',
         'guide_approach_deviation_degrees', 'guide_azimuth_degrees', 'guide_sampling_policy',
+        'requested_guidance_pairs', 'informative_guidance_pairs', 'overflow_guidance_pairs',
+        'maximum_anchor_distance_angstrom',
         'self_binder_rmsd',
         'geometry_match', 'geometry_and_self_consistency'])
     write_csv(destination / 'conditions.csv', totals, ['index', 'arm', 'replicate', 'status', 'requested_backbones',
