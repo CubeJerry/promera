@@ -792,6 +792,10 @@ def test_real_preflight_report_json_encodes_omegaconf_angle_list(
     """
     module, _ = task_module
     root = angular_fixture(prepared)
+    # preflight imports the concrete 'pose_task' module name. Point it to
+    # the mocked task boundary rather than accidentally importing a second
+    # copy of PoseGuidedDesign with unmocked dataset methods.
+    monkeypatch.setitem(sys.modules, "pose_task", module)
     module.PoseGuidedDesign.features = [
         synthetic_features(SEQ, 0),
         synthetic_features(SEQ.replace('GG', 'GGGG'), 1),
