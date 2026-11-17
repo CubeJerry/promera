@@ -597,3 +597,127 @@ def test_current_nominee_multichain_and_symmetry_options_survive_prepare(prepare
     assert generated.antigen_symmetry.group == 'C1'
     assert generated.antigen_symmetry_validation.status == 'valid'
     assert list(generated.epitope_residue_map.K) == [2, 3]
+
+
+def _synthetic_atlas_run(tmp_path):
+    import hashlib
+    from pathlib import Path
+    import launch_from_atlas as atlas
+
+    run = tmp_path / "sandbox" / "nominee-runs" / "poseguide"
+    scan = run / "analysis" / "epitope_scan"
+    scan.mkdir(parents=True)
+    pose_id = "B004__G047__5_389"
+    seed = scan / "pose_seeds" / "B004" / pose_id
+    seed.mkdir(parents=True)
+    backbone = seed / "backbone.cif"
+    backbone.write_bytes(b"original canonical CDR-guided coordinates")
+    original = run / "promera" / "batch_5" / "sample_5_389" / "backbone.cif"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(backbone.read_bytes())
+    digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+    manifest = {
+        "pose_seed_id": pose_id,
+        "canonical_backbone_path": str(backbone),
+        "canonical_backbone_sha256": digest(backbone),
+    }
+    seed_manifest = seed / "pose_seed.json"
+    seed_manifest.write_text(json.dumps(manifest))
+    row = {
+        "pose_seed_id": pose_id,
+        "source_candidate_id": "5_389",
+        "basin_id": "B004",
+        "geometry_group_id": "G047",
+        "classification": "cdr_driven",
+        "pose_seed_manifest_path": str(seed_manifest),
+        "pose_seed_manifest_sha256": digest(seed_manifest),
+        "backbone_path": str(original),
+        "backbone_sha256": digest(original),
+        "binder_chain": "B",
+        "antigen_chains": "A",
+        "framework": PATTERN,
+    }
+    catalog_path = scan / "pose_catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "records": [row]}))
+    (run / "promera" / "promera_batch_1.yaml").write_text(
+        json.dumps({"binder": {"chain": "B", "type": "vhh",
+                              "framework": "WRONG"}, "input": "wrong.json"}))
+    (run / "promera" / "input").mkdir(parents=True)
+    (run / "promera" / "input" / "target.json").write_text('{"A":{"type":"protein","sequence":"ACDEFG"}}')
+    (run / "promera" / "msa").mkdir()
+    config = run / "promera" / "promera_batch_5.yaml"
+    config.write_text(json.dumps({
+        "binder": {"chain": "B", "type": "vhh", "framework": PATTERN},
+        "target_chains": ["A"],
+        "input": str(run / "promera" / "input" / "target.json"),
+        "msa_dir": str(run / "promera" / "msa"),
+    }))
+    return run, backbone, original, seed_manifest, catalog_path, config
+
+
+def test_atlas_launch_selects_exact_first_cdr_seed_batch_not_first_task(tmp_path):
+    import launch_from_atlas as atlas
+    run, backbone, original, manifest, catalog, config = _synthetic_atlas_run(tmp_path)
+    selected = atlas.select_source(run, "B004__G047__5_389")
+    assert selected["canonical_backbone"] == backbone.resolve()
+    assert selected["original_backbone"] == original.resolve()
+    assert selected["base_config"] == config
+    assert selected["batch_number"] == 5
+    assert selected["source_record"]["classification"] == "cdr_driven"
+
+
+@pytest.mark.parametrize("mutation", ["wrong_class", "changed_backbone", "changed_manifest",
+                                       "wrong_framework", "wrong_chain", "missing_batch", "duplicate"])
+def test_atlas_launch_refuses_unverified_or_mismatched_source(tmp_path, mutation):
+    import launch_from_atlas as atlas
+    run, backbone, original, manifest, catalog, config = _synthetic_atlas_run(tmp_path)
+    rowset = json.loads(catalog.read_text())
+    if mutation == "wrong_class":
+        rowset["records"][0]["classification"] = "framework_driven"
+    elif mutation == "changed_backbone":
+        backbone.write_bytes(b"invalid geometry data")
+    elif mutation == "changed_manifest":
+        manifest.write_text("different manifest")
+    elif mutation == "wrong_framework":
+        cfg = json.loads(config.read_text())
+        cfg["binder"]["framework"] = "DIFFERENT"
+        config.write_text(json.dumps(cfg))
+    elif mutation == "wrong_chain":
+        cfg = json.loads(config.read_text())
+        cfg["target_chains"] = ["Z"]
+        config.write_text(json.dumps(cfg))
+    elif mutation == "missing_batch":
+        config.unlink()
+    elif mutation == "duplicate":
+        rowset["records"].append(dict(rowset["records"][0]))
+    catalog.write_text(json.dumps(rowset))
+    with pytest.raises(ValueError):
+        atlas.select_source(run, "B004__G047__5_389")
+
+
+def test_atlas_launcher_external_bind_is_read_only(tmp_path):
+    import launch_from_atlas as atlas
+    run, *_ = _synthetic_atlas_run(tmp_path)
+    selected = atlas.select_source(run)
+    parent = tmp_path / "different" / "installation"
+    work = parent / "pose-guidance-work"
+    external = atlas.extra_binds(selected, parent, work)
+    assert f"{run}:{run}:ro" in external
+    assert "rw" not in external
+    assert len(external.split(",")) >= 1
+
+
+def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
+    import launch_from_atlas as atlas
+    run, *_ = _synthetic_atlas_run(tmp_path)
+    site = tmp_path / "dev" / "config.yaml"
+    site.parent.mkdir(parents=True)
+    site.write_text(f"paths:\n  installation_parent: {tmp_path / 'installation'}\n")
+    args = argparse.Namespace(
+        run=str(run), pose_id="B004__G047__5_389", angle_range="15:35",
+        nominee_config=str(site), work=str(tmp_path / "test-work"), dry_run=True,
+        no_submit=False,
+    )
+    atlas.launch(args)
+    assert "DRY RUN" in capsys.readouterr().out
+    assert not list((tmp_path / "test-work").iterdir())

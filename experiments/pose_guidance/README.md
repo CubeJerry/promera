@@ -4,7 +4,64 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
-## Quick start: angle-range generation on current NOMINEE main
+## One-command Pose Atlas smoke (B004 / G047 / 5_389)
+
+The B004 Pose Atlas shows **G047 → 5_389** as the first CDR-driven
+seed. For this run, the canonical catalogue key is
+`B004__G047__5_389`, not the adjacent `6_005` candidate.
+
+The recommended launcher reads the exact
+`<run>/analysis/epitope_scan/pose_catalog.json`, verifies the seed and
+original-backbone hashes, and selects the **canonical raw backbone** that the
+CDR-driven Pose Atlas displayed. It derives the matching
+`<run>/promera/promera_batch_5.yaml` from `5_389` and refuses to
+substitute a different array batch or the flat run config.
+
+Run this on the WEHI HPC login terminal (safe to repeat the clone stage):
+
+```bash
+cd /vast/home/users/chen.je
+if [ -d promera-pose-guidance/.git ]; then
+  git -C promera-pose-guidance pull --ff-only
+else
+  git clone -b feature/cross-chain-pose-conditioning --single-branch \
+    https://github.com/CubeJerry/promera.git promera-pose-guidance
+fi
+module load apptainer
+
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --angle-range 15:35
+```
+
+The launcher reads the populated
+`/vast/home/users/chen.je/dev/config.yaml` to find the latest managed Promera
+image and assets and chooses `<installation_parent>/pose-guidance-work` for
+output. It creates a new timestamped experiment; the old run is read only.
+
+It verifies the exact source record and SHA-256, prepares three conditions,
+runs three *real runtime* CPU featurization/preflight checks, then submits a
+sequential SLURM array (`0-2%1`) only if every check succeeds. Six backbones
+and up to 30 unconstrained Promera refolds are requested in total.
+No GPU model execution is performed on the login node.
+
+For an inspection without preparing or submitting, append `--dry-run`.
+To prepare/preflight without SLURM submission, append `--no-submit`.
+
+The selected Pose Atlas backbone is the original generated backbone, which
+matches the viewer's CDR-driven seed. A representative sequence-conditioned
+refold is a *different* structural reference and should be a separate
+experiment; do not silently swap them. The original source run is not
+modified. If the catalogue, pose, image, backend YAML or MSA cache is missing,
+the launch fails with a diagnostic rather than guessing.
+
+The requested `15:35` interval describes angular deviation from the selected
+reference approach axis, not from the antigen's local surface normal.
+This is soft generation conditioning; the measured angle in the free
+backbone/refold is separately recorded and can differ.
+
+## Manual setup: angle-range generation on current NOMINEE main
 
 This tests whether a selected VHH pose can guide fresh Promera backbones into a
 **requested range of target-relative approach angles**. Pass `--angle-range 15:35`
