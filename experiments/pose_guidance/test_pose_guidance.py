@@ -774,3 +774,54 @@ def test_milton_gpuq_explicitly_requests_one_a30():
     assert "#SBATCH --gres=gpu:A30:1" in script
     assert "#SBATCH --time=12:00:00" in script
     assert "#SBATCH --gres=gpu:1\n" not in script
+
+
+@pytest.mark.parametrize("job, expected_angles", [
+    (0, None),
+    (1, None),
+    (2, [15.0, 35.0]),
+])
+def test_real_preflight_report_json_encodes_omegaconf_angle_list(
+    prepared, task_module, monkeypatch, job, expected_angles
+):
+    """Regression: successful featurization must produce valid preflight JSON.
+
+    In particular the cone arm is loaded by OmegaConf as ListConfig, which is
+    *not* directly JSON-serializable. This exercises preflight(), not just the
+    conversion expression in isolation.
+    """
+    module, _ = task_module
+    root = angular_fixture(prepared)
+    module.PoseGuidedDesign.features = [
+        synthetic_features(SEQ, 0),
+        synthetic_features(SEQ.replace('GG', 'GGGG'), 1),
+    ]
+    monkeypatch.setattr(
+        module.PoseGuidedDesign, "__len__", lambda self: 2, raising=False
+    )
+    design = sys.modules["promera.inference.design"]
+    design.boltz_if = object()
+    design.__file__ = str(Path(__file__).with_name("pose_task.py"))
+    sys.modules["promera.inference"].design = design
+    checkpoint = prepared.parent / "synthetic.ckpt"
+    checkpoint.write_bytes(b"not a real checkpoint")
+    monkeypatch.setenv("PROMERA_WEIGHTS", str(checkpoint))
+
+    import_module = experiment.importlib.import_module
+
+    def import_stub(name):
+        if name in {"promera.model.model", "promera.diffusion.sampler"}:
+            return design
+        return import_module(name)
+
+    monkeypatch.setattr(experiment.importlib, "import_module", import_stub)
+    report = experiment.preflight(root, job)
+    assert report["requested_approach_angle_range_degrees"] == expected_angles
+    assert report["pair_count"] == (0 if job == 0 else 16)
+    if job == 2:
+        assert all(
+            15 <= item["guide_angle_degrees"] <= 35
+            for item in report["pose_anchor_diagnostics"]
+        )
+    encoded = json.loads(json.dumps(report, indent=2, allow_nan=False))
+    assert encoded["requested_approach_angle_range_degrees"] == expected_angles

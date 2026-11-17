@@ -243,7 +243,10 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               'design_sha256': digest(inspect.getfile(design)), 'weights': str(weights),
               'weights_size': weights.stat().st_size,
               'featurized_items': len(features), 'pair_count': int(cfg.pose_guidance.pairs),
-              'requested_approach_angle_range_degrees': cfg.pose_guidance.get('approach_angle_range_degrees'),
+              'requested_approach_angle_range_degrees': (
+                  OmegaConf.to_container(cfg.pose_guidance.approach_angle_range_degrees, resolve=True)
+                  if cfg.pose_guidance.get('approach_angle_range_degrees') is not None else None
+              ),
               'inverse_folder': cfg.inverse_folder.type,
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
               'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT')}
