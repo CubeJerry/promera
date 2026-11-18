@@ -433,7 +433,6 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
     exported = {value.partition('=')[0]: value.partition('=')[2]
                 for index, value in enumerate(args) if index and args[index - 1] == '--env'}
     expected = {
-        'HOME': work / '.home',
         'XDG_CACHE_HOME': work / '.cache',
         'XDG_CONFIG_HOME': work / '.config',
         'XDG_DATA_HOME': work / '.local/share',
@@ -449,7 +448,20 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
         assert value.is_dir(), name
     assert Path(exported['XDG_RUNTIME_DIR']).parent.parent == work / '.tmp'
     assert exported['TMPDIR'].startswith(str(work / '.tmp'))
-    assert 'HOME=/home/users' not in args
+    assert 'HOME' not in exported, 'Apptainer rejects --env HOME and emits a warning'
+    assert '--home' in args
+    assert args[args.index('--home') + 1] == (
+        f"{work / '.home'}:{work / '.home'}"
+    )
+    assert '--no-home' not in args
+    assert '--no-mount' in args
+    assert args[args.index('--no-mount') + 1] == 'cwd'
+    assert '/usr/bin/env' in args
+    env_index = args.index('/usr/bin/env')
+    assert args[env_index + 1] == f"HOME={work / '.home'}"
+    assert args[env_index + 2] == 'python'
+    assert args[env_index + 3] == '/opt/pose_guidance/experiment.py'
+    assert (work / '.home').is_dir()
     assert not list((work / '.tmp').iterdir())
 
 

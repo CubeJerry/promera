@@ -65,6 +65,39 @@ reference approach axis, not from the antigen's local surface normal.
 This is soft generation conditioning; the measured angle in the free
 backbone/refold is separately recorded and can differ.
 
+## Apptainer HOME override fix
+
+An A30 run later failed in the GPU writable-directory preflight with
+`WARNING: Overriding HOME environment variable with APPTAINERENV_HOME is not permitted`,
+followed by `HOME=/home/users/allstaff/chen.je is not writable`. The
+previous scratch-home fix tried to pass `--env HOME=...`, but Apptainer
+reserves `HOME` and ignores this override. This is a **verified launcher
+configuration bug**, not evidence that Promera's new pose guidance fails.
+
+The wrapper now uses Apptainer's supported
+`--home "$POSE_WORK/.home:$POSE_WORK/.home"` with
+`--no-mount cwd` (not `--no-home` or `--no-mount home`), and the process is
+started with `/usr/bin/env HOME="$POSE_WORK/.home" python ...`, avoiding
+`APPTAINERENV_HOME` entirely. Existing scratch-backed cache paths and
+the GPU writable-directory probe are retained. The probe still checks
+`Path.home()` and all key caches before loading the model, so an unsupported
+site-specific mount configuration fails before diffusion.
+
+**New experiment:** after updating the branch, rerun the one-command Pose
+Atlas launcher below. This regenerates fingerprinted inputs and submits a
+new SLURM job; do not submit an experiment prepared against older
+`container.sh` hashes.
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance pull --ff-only
+module load apptainer
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --angle-range 15:35
+```
+
 ## GPU filesystem error after SLURM launch (2026-11-18)
 
 A later A30 launch reached the two input-featurization records and then stopped

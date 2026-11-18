@@ -38,9 +38,9 @@ ASSETS=$(readlink -f -- "$PROMERA_ASSETS")
 }
 printf 'Promera image: %s\nPromera assets: %s\n' "$IMAGE" "$ASSETS" >&2
 [[ ! -d "$WORK/promera" ]] || { echo 'ERROR: POSE_WORK must not be a Promera source checkout' >&2; exit 2; }
-# An isolated --no-home container must never inherit a non-mounted /home/users
-# from the SIF or NSS passwd entry. Provide a real writable home under scratch
-# as well as explicit destinations for libraries that ignore HOME.
+# Use Apptainer's supported --home mount below, not --env HOME=...:
+# Apptainer forbids APPTAINERENV_HOME overrides and otherwise leaves the
+# read-only NSS home (/home/users/...) in place. Keep all writes in scratch.
 mkdir -p \
     "$WORK/.home" "$WORK/.config" "$WORK/.local/share" "$WORK/.tmp" \
     "$WORK/.cache/torch" "$WORK/.cache/torchinductor" \
@@ -73,7 +73,10 @@ if [[ -d "$ASSETS/ligandmpnn/model_params" ]]; then
     binds+=",$ASSETS/ligandmpnn/model_params:/opt/nominee/component/LigandMPNN/model_params:ro"
 fi
 if [[ -n "${POSE_EXTRA_BINDS:-}" ]]; then binds+=",$POSE_EXTRA_BINDS"; fi
-args=(exec --cleanenv --no-home --no-mount home,cwd --bind "$binds" --pwd "$WORK")
+# --home SRC:DEST sets the container's home to the scratch-backed directory.
+# Do not disable the home mount with --no-home or --no-mount home.
+# The working directory is explicitly bound; suppress the implicit CWD mount.
+args=(exec --cleanenv --no-mount cwd --home "$WORK/.home:$WORK/.home" --bind "$binds" --pwd "$WORK")
 # CPU preparation and analysis do not require a GPU allocation.
 if [[ "${1:-}" == run ]]; then args+=(--nv); fi
 for var in CUDA_VISIBLE_DEVICES SLURM_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_TASK SLURM_NTASKS_PER_NODE SLURM_NNODES SLURM_NTASKS SLURM_PROCID SLURM_LOCALID SLURM_NODEID; do
@@ -87,10 +90,10 @@ args+=(--env "TINYPROT_CACHE=/opt/nominee/assets/tinyprot")
 args+=(--env "NOMINEE_ASSET_ROOT=/opt/nominee/assets")
 args+=(--env "ABMPNN_CHECKPOINT=/opt/nominee/assets/checkpoints/abmpnn.pt")
 args+=(--env "LIGANDMPNN_DIR=/opt/nominee/component/LigandMPNN")
-# --cleanenv and --no-home do not guarantee that the container's HOME
-# environment matches a writable path. Redirect all common runtime caches,
-# especially GPU compiler caches, to the bound experiment scratch workspace.
-args+=(--env "HOME=$WORK/.home" --env "XDG_CONFIG_HOME=$WORK/.config")
+# HOME is a reserved Apptainer variable: use --home above, never --env HOME.
+# The launched process also gets an explicit HOME via /usr/bin/env (not
+# APPTAINERENV_HOME), ensuring Python and any subprocesses see writable scratch.
+args+=(--env "XDG_CONFIG_HOME=$WORK/.config")
 args+=(--env "XDG_CACHE_HOME=$WORK/.cache" --env "XDG_DATA_HOME=$WORK/.local/share")
 args+=(--env "XDG_RUNTIME_DIR=$TEMP/xdg-runtime" --env "TMPDIR=$TEMP")
 args+=(--env "TORCH_HOME=$WORK/.cache/torch")
@@ -105,4 +108,4 @@ args+=(--env "MPLCONFIGDIR=$WORK/.cache/matplotlib" --env "MPLBACKEND=Agg")
 args+=(--env "NUMBA_CACHE_DIR=$WORK/.cache/numba")
 args+=(--env "CUPY_CACHE_DIR=$WORK/.cache/cupy")
 args+=(--env 'PROMERA_RECORD_TRAJECTORY=0' --env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
-apptainer "${args[@]}" "$IMAGE" python /opt/pose_guidance/experiment.py "$@"
+apptainer "${args[@]}" "$IMAGE" /usr/bin/env "HOME=$WORK/.home" python /opt/pose_guidance/experiment.py "$@"
