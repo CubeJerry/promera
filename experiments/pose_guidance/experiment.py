@@ -120,7 +120,9 @@ def prepare(args: argparse.Namespace) -> None:
                 'the original task already supplies epitope selection'
             )
         plan['targeted_site'] = targeted_site_from_reference(
-            source_chains, plan, float(getattr(args, 'site_cutoff_angstrom', 10.0))
+            source_chains, plan,
+            cutoff_angstrom=float(getattr(args, 'site_cutoff_angstrom', 10.0)),
+            max_residues=getattr(args, 'site_residues', 7),
         )
     msa = resolve(args.msa_dir or str(cfg.get('msa_dir') or ''), base_path.parent)
     if not (args.msa_dir or cfg.get('msa_dir')) or not msa.is_dir():
@@ -238,6 +240,10 @@ def prepare(args: argparse.Namespace) -> None:
             if args.profile == 'comparison' else None
         ),
         'targeted_site': plan.get('targeted_site'),
+        'targeted_site_residue_count': (
+            len(plan['targeted_site']['schema_positions_1_based'])
+            if plan.get('targeted_site') else 0
+        ),
         'backbones_per_replicate': n,
         'replicates': replicates,
         'sequences_per_backbone': args.sequences_per_backbone,
@@ -745,7 +751,9 @@ def main() -> None:
     prep.add_argument('--out', required=True)
     prep.add_argument('--profile', choices=['smoke', 'pilot', 'comparison'], default='smoke')
     prep.add_argument('--site-cutoff-angstrom', type=float, default=10.0,
-                      help='comparison: antigen residues within this CA distance of source CDRs (default 10 A)')
+                      help='comparison: source-CDR CA neighbourhood for site candidates (default 10 A)')
+    prep.add_argument('--site-residues', type=int, default=7,
+                      help='comparison: number of nearest source-CDR antigen residues to target (default 7)')
     prep.add_argument('--angle-range', metavar='MIN:MAX',
                       help='source-relative angular guidance interval in degrees (e.g. 15:35)')
     prep.add_argument('--angle-translation-angstrom', type=float, default=0.0,

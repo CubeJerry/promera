@@ -637,6 +637,7 @@ def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2):
         # This synthetic binder is ~20 A from the tiny synthetic target;
         # the real B004 source yields 33 CDR-proximal antigen residues at 10 A.
         site_cutoff_angstrom=25.0,
+        site_residues=7,
     )
     experiment.prepare(args)
     return Path(args.out)
@@ -662,6 +663,34 @@ def test_target_site_selects_antigen_schema_ordinals_not_template_ids():
         g.targeted_site_from_reference(chains, plan, 5.0)
 
 
+def test_site_cap_selects_seven_closest_from_broad_cdr_neighbourhood():
+    chains, _, plan = fixtures()
+    plan['target_sequences']['K'] = 'A' * 20
+    plan['target_labels'] = [['K', i] for i in range(20)]
+    plan['target_coords'] = [[i * 0.2, 0, 0] for i in range(20)]
+    site = g.targeted_site_from_reference(chains, plan, cutoff_angstrom=25.0)
+    assert site['source_candidate_pool_count'] == 20
+    assert site['requested_site_residue_limit'] == 7
+    assert site['source_target_residue_count'] == 7
+    assert len(site['schema_positions_1_based']) == 7
+    assert len(site['nearest_cdr_ca_distance_angstrom']) == 7
+    assert site['selection_policy'] == (
+        'nearest_target_CA_to_any_source_CDR_CA_within_candidate_cutoff'
+    )
+    # The selector must respond to user-specified compact site size.
+    smaller = g.targeted_site_from_reference(
+        chains, plan, cutoff_angstrom=25.0, max_residues=4
+    )
+    assert smaller['source_target_residue_count'] == 4
+    assert set(smaller['schema_positions_1_based']).issubset(
+        site['schema_positions_1_based']
+    )
+    with pytest.raises(ValueError, match='site-residues'):
+        g.targeted_site_from_reference(chains, plan, max_residues=33)
+    with pytest.raises(ValueError, match='site-residues'):
+        g.targeted_site_from_reference(chains, plan, max_residues=True)
+
+
 def test_comparison_creates_paired_site_only_and_guided_arms(prepared):
     root = comparison_fixture(prepared)
     manifest = experiment.load_json(root / 'manifest.json')
@@ -670,6 +699,8 @@ def test_comparison_creates_paired_site_only_and_guided_arms(prepared):
     assert manifest['angle_range_requested_degrees'] == [0, 20]
     assert manifest['comparison_primary_contrast'] == 'targeted_only_vs_cone16_same_epitope_and_seeds'
     assert manifest['targeted_site']['schema_positions_1_based'] == [1, 2, 3, 4, 5]
+    assert manifest['targeted_site_residue_count'] == 5
+    assert manifest['targeted_site']['requested_site_residue_limit'] == 7
     assert sum(job['requested_backbones'] for job in manifest['jobs']) == 24
     names = [job['arm'] for job in manifest['jobs']]
     assert names == ['control']*2 + ['targeted']*2 + ['anchors16']*2 + ['cone16']*2
@@ -987,7 +1018,8 @@ def test_atlas_launcher_comparison_dynamic_array_and_budget(tmp_path, monkeypatc
         run=str(run), pose_id="B004__G047__5_389", angle_range="0:20",
         nominee_config=str(site), work=str(tmp_path / 'bench-work'),
         profile='comparison', backbones=3, replicates=2,
-        site_cutoff_angstrom=10.0, dry_run=False, no_submit=False,
+        site_cutoff_angstrom=10.0, site_residues=7,
+        dry_run=False, no_submit=False,
     )
     invocations = []
     def fake_run(argv, **kwargs):
@@ -997,6 +1029,7 @@ def test_atlas_launcher_comparison_dynamic_array_and_budget(tmp_path, monkeypatc
             assert argv[argv.index('--backbones') + 1] == '3'
             assert argv[argv.index('--replicates') + 1] == '2'
             assert argv[argv.index('--site-cutoff-angstrom') + 1] == '10.0'
+            assert argv[argv.index('--site-residues') + 1] == '7'
             root = Path(argv[argv.index('--out') + 1])
             root.mkdir(parents=True, exist_ok=True)
             (root / 'manifest.json').write_text(json.dumps({

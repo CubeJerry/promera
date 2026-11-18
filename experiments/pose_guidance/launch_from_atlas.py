@@ -229,7 +229,8 @@ def launch(args: argparse.Namespace) -> None:
         prepare_command.extend(["--replicates", str(args.replicates)])
     if profile == "comparison":
         prepare_command.extend([
-            "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0))
+            "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0)),
+            "--site-residues", str(getattr(args, "site_residues", 7)),
         ])
     subprocess.run(prepare_command, check=True, env=env)
     (experiment / "source_atlas_selection.json").write_text(json.dumps({
@@ -291,7 +292,9 @@ def main() -> int:
     parser.add_argument("--replicates", type=int,
                         help="independent replicate groups per arm (comparison default: 3)")
     parser.add_argument("--site-cutoff-angstrom", type=float, default=10.0,
-                        help="comparison: C-alpha source CDR contact neighbourhood (default 10 A)")
+                        help="comparison: candidate C-alpha source CDR neighbourhood (default 10 A)")
+    parser.add_argument("--site-residues", type=int, default=7,
+                        help="comparison: nearest antigen residues conditioned (default 7, max 20)")
     parser.add_argument("--nominee-config", default=os.environ.get(
         "NOMINEE_CONFIG", "/vast/home/users/chen.je/dev/config.yaml"))
     parser.add_argument("--work", default=os.environ.get("POSE_WORK"),

@@ -387,17 +387,24 @@ def build_plan(chains: dict[str, Any], schema: dict[str, Any], pattern: str,
 
 
 def targeted_site_from_reference(
-    chains: dict[str, Any], plan: dict[str, Any], cutoff_angstrom: float = 10.0
+    chains: dict[str, Any], plan: dict[str, Any], cutoff_angstrom: float = 10.0,
+    max_residues: int = 7,
 ) -> dict[str, Any]:
-    """Site-only comparator: source CDR-proximal antigen C-alpha neighbourhood.
+    """Derive a compact, site-only targeted comparator from the source CDRs.
 
-    Select an *antigen residue set*, not a nanobody pose. The same explicit
-    epitope mask is fed to targeted-only and all geometry-guided arms. Keep
-    sequence-ordinal coordinates (not mmCIF author IDs), avoiding ambiguous
-    residue numbering when the antigen is cropped from a larger template.
+    The CA-distance cutoff defines a *candidate pool*, never an unrestricted
+    10-A shell of conditioning residues. Choose at most seven nearby antigen
+    positions by CDR proximity (or another explicitly requested site size).
+    This mirrors the scale of NOMINEE's usual Epitope Scan signatures while
+    keeping the selection deterministic and shared by every targeted arm.
+    Sequence ordinals are mapped to actual native template residue IDs later.
     """
     if not np.isfinite(cutoff_angstrom) or not 5 <= cutoff_angstrom <= 25:
         raise ValueError('site C-alpha cutoff must be 5-25 Angstrom')
+    if isinstance(max_residues, bool) or not isinstance(max_residues, (int, np.integer)):
+        raise ValueError('site-residues must be an integer')
+    if not 4 <= int(max_residues) <= 20:
+        raise ValueError('site-residues must be between 4 and 20')
     if len(plan['target_sequences']) != 1:
         raise ValueError(
             'targeted comparison currently supports one antigen chain; '
@@ -419,13 +426,20 @@ def targeted_site_from_reference(
         for i, (chain, ordinal) in enumerate(labels)
         if chain == chain_name and contact_distance[i] <= cutoff_angstrom
     ]
-    positions = sorted(set(pos for pos, _ in qualifying))
-    if not 4 <= len(positions) <= 80:
+    # Reject ambiguous duplicated schema sites; never silently collapse a
+    # chain-mapping bug to make the residue count appear correct.
+    if len({position for position, _ in qualifying}) != len(qualifying):
+        raise ValueError('duplicate target schema positions in site candidate pool')
+    if len(qualifying) < 4:
         raise ValueError(
-            f'CDR-proximal site has {len(positions)} residues within '
-            f'{cutoff_angstrom:g} A (required 4-80). Check the source pose '
-            'or explicitly choose a different site cutoff.'
+            f'CDR-proximal site has {len(qualifying)} residues within '
+            f'{cutoff_angstrom:g} A (required at least four). Check the source '
+            'pose or explicitly choose a different site cutoff.'
         )
+    # Proximity first, deterministic sequence position for exact ties.
+    ranked = sorted(qualifying, key=lambda entry: (entry[1], entry[0]))
+    selected = ranked[:int(max_residues)]
+    positions = sorted(position for position, _ in selected)
     sequence = plan['target_sequences'][chain_name]
     if any(p < 1 or p > len(sequence) for p in positions):
         raise ValueError('derived epitope position falls outside target sequence')
@@ -435,12 +449,16 @@ def targeted_site_from_reference(
         'source_cdr_ca_cutoff_angstrom': float(cutoff_angstrom),
         'source_cdr_residue_count': len(cdr_ordinals),
         'source_target_residue_count': len(positions),
-        'method': 'source_CDR_CA_to_target_CA_within_cutoff',
+        'requested_site_residue_limit': int(max_residues),
+        'source_candidate_pool_count': len(qualifying),
+        'selection_policy': 'nearest_target_CA_to_any_source_CDR_CA_within_candidate_cutoff',
+        'method': 'rank_nearest_source_CDR_CA_to_target_CA_within_cutoff',
         'residue_numbering': '1-based in exact target schema (not template author IDs)',
         'nearest_cdr_ca_distance_angstrom': {
-            str(pos): distance for pos, distance in qualifying
+            str(pos): float(distance) for pos, distance in selected
         },
     }
+
 
 
 def native_epitope_template_ids(

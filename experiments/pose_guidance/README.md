@@ -11,11 +11,16 @@ steer backbone orientation, but **its control was entirely untargeted**
 (`epitope_tokens=0`). It could not distinguish additional orientation guidance
 from the model's natural pose distribution around the same antigen site.
 
-This follow-up derives a *single antigen residue site* from the canonical
-B004/G047/5_389 reference: target chain **A**, schema residues with C-alpha
-within **10 A** of a reference CDR C-alpha (33 residues in the supplied
-reference backbone). This is a source-guided **site** definition, not a
-framework template. The same antigen epitope feature mask applies to all
+This follow-up derives a **compact, seven-residue antigen target** from the
+canonical B004/G047/5_389 reference on chain A. The 10 A C-alpha distance
+to source CDRs identifies a larger candidate pool (33 residues in this
+reference), but **only the seven closest antigen residues are selected for
+native targeted conditioning**. The seven positions are chosen by smallest
+source-CDR-to-antigen C-alpha distance, with sequence position breaking ties.
+The selected site is a reference-derived targeting hypothesis, not a
+nanobody framework template. This size matches the maximum default Epitope
+Scan signature of seven residues; ordinary targeted runs can also accept
+different user-specified site sizes. The same antigen epitope feature mask applies to all
 site-aware conditions. The experiment uses **Promera's native targeted
 run pathway**. Because the NOMINEE antigen template has different author
 residue numbering from the 424-residue cropped target, preparation maps the
@@ -52,6 +57,7 @@ python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
   --pose-id B004__G047__5_389 \
   --profile comparison \
   --angle-range 0:20 \
+  --site-residues 7 \
   --backbones 32 \
   --replicates 3
 ```
@@ -63,8 +69,12 @@ concurrency remains **one A30 at a time** with `gpuq`,
 `--gres=gpu:A30:1`, and 12 h maximum per task. No GPU work runs on the
 login node. The launcher preflights **every task** and checks *all* requested
 guide placements using inexpensive CPU geometry before submission. An
-optional `--site-cutoff-angstrom` changes the single common C-alpha site
-neighbourhood, with 10 A as the default.
+optional `--site-cutoff-angstrom` changes the candidate C-alpha
+neighbourhood (default 10 A); `--site-residues` selects how many of the
+nearest candidates are actually conditioned (default **7**, allowed 4-20).
+The prepared manifest and preflight identify the exact seven selected
+positions. The original 33-residue neighbourhood is never passed to Promera
+as the targeted epitope.
 
 After the array finishes, analyse the printed experiment path using the
 usual `container.sh analyse --experiment ...` command. In addition to
