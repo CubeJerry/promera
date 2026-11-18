@@ -80,6 +80,31 @@ class PoseGuidedDesign(Design):
             offsets[name], total = total, total + len(chain.rname)
         if total != len(feats['restype']):
             raise ValueError('expected one protein token per sequence residue')
+        site = self.plan.get('targeted_site')
+        site_enabled = bool(self.guide.get('targeted_site_enabled', False))
+        if site_enabled:
+            if site is None or self.cfg.get('epitope_residues'):
+                raise ValueError('targeted comparison needs one generated site and no ambiguous legacy epitope residues')
+            chain = site['chain']
+            positions = site['schema_positions_1_based']
+            if chain not in offsets or chain != self.cfg.epitope_chain:
+                raise ValueError('target site chain must match the selected antigen chain')
+            if any(not 1 <= p <= len(struct.chains[chain].rname) for p in positions):
+                raise ValueError('selected site residue outside generated antigen')
+            site_tokens = [offsets[chain] + p - 1 for p in positions]
+            # The native design task has already applied its ordinary CDR
+            # paratope flags. Add site-only antigen epitope flags using schema
+            # ordinals; leave framework/template coordinates untouched.
+            feats['is_epitope'][site_tokens] = 1
+            struct.epitope_residues = list(positions)
+        elif site is not None:
+            site_tokens = []
+            if any(bool(feats['is_epitope'][offsets[chain] + p - 1])
+                   for chain in self.plan['target_sequences']
+                   for p in range(1, len(struct.chains[chain].rname) + 1)):
+                raise ValueError('untargeted comparison leaked epitope flags')
+        else:
+            site_tokens = []
         for name, sequence in self.plan['target_sequences'].items():
             if chain_sequence(struct.chains[name]) != sequence:
                 raise ValueError(f'generated target {name} differs from the prepared schema')
@@ -123,6 +148,9 @@ class PoseGuidedDesign(Design):
                 (float(p['distance_angstrom']) for p in records), default=None
             ),
             'distance_encoding': 'promera_51_bins_1_to_50_with_overflow',
+            'targeted_site_enabled': site_enabled,
+            'targeted_site_tokens': len(site_tokens),
+            'targeted_site_chain': site['chain'] if site_enabled else None,
             **guide_metadata,
         }
         return feats

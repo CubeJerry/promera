@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import time
+import statistics
 import traceback
 from typing import Any
 
@@ -25,7 +26,9 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from pose_geometry import (align, build_plan, digest, observed_arrays,
-                           pose_metrics, read_chains, rmsd)
+                           pose_metrics, read_chains, rmsd,
+                           targeted_site_from_reference, site_contact_metrics,
+                           cone_placement, jitter, cross_distogram)
 
 HERE = Path(__file__).resolve().parent
 ARMS = [('control', 0, 0, 0), ('anchors4', 4, 0, 0), ('anchors8', 8, 0, 0),
@@ -104,9 +107,21 @@ def prepare(args: argparse.Namespace) -> None:
     target_map = json.loads(args.target_map) if args.target_map else {name: name for name in schema}
     pose = Path(args.pose).expanduser().resolve()
     guide_binder = args.guide_binder_chain or cfg['binder']['chain']
-    plan = build_plan(read_chains(pose), schema, cfg['binder']['framework'],
+    source_chains = read_chains(pose)
+    plan = build_plan(source_chains, schema, cfg['binder']['framework'],
                       cfg['binder']['chain'], guide_binder, target_map)
     plan['source_pose_sha256'] = digest(pose)
+    if args.profile == 'comparison':
+        if getattr(args, 'angle_range', None) is None:
+            raise ValueError('comparison requires --angle-range, e.g. 0:20')
+        if cfg.get('epitope_residues') or cfg.get('epitope_residue_map'):
+            raise ValueError(
+                'comparison derives exactly one shared source-CDR target site; '
+                'the original task already supplies epitope selection'
+            )
+        plan['targeted_site'] = targeted_site_from_reference(
+            source_chains, plan, float(getattr(args, 'site_cutoff_angstrom', 10.0))
+        )
     msa = resolve(args.msa_dir or str(cfg.get('msa_dir') or ''), base_path.parent)
     if not (args.msa_dir or cfg.get('msa_dir')) or not msa.is_dir():
         raise ValueError('provide an existing target MSA cache with --msa-dir')
@@ -123,9 +138,15 @@ def prepare(args: argparse.Namespace) -> None:
         raise ValueError('angle translation bound must be finite and nonnegative')
     if interval is None and angle_shift:
         raise ValueError('--angle-translation-angstrom requires --angle-range')
-    selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else list(ARMS)
-    if interval is not None:
-        selected_arms.append(('cone16', 16, 0, angle_shift))
+    if args.profile == 'comparison':
+        # The primary null control sees the identical target epitope but no
+        # inter-chain distances. An untargeted arm remains as context only.
+        selected_arms = [('control', 0, 0, 0), ('targeted', 0, 0, 0),
+                         ('anchors16', 16, 0, 0), ('cone16', 16, 0, angle_shift)]
+    else:
+        selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else list(ARMS)
+        if interval is not None:
+            selected_arms.append(('cone16', 16, 0, angle_shift))
     # Validate paths before creating the experiment tree.
     target_template = cfg.get('target_template')
     if target_template:
@@ -155,10 +176,21 @@ def prepare(args: argparse.Namespace) -> None:
         for rep in range(replicates):
             job_cfg = copy.deepcopy(cfg)
             job_cfg['output'] = str(root / 'results' / label / f'rep{rep}')
+            site_enabled = args.profile == 'comparison' and label != 'control'
+            if args.profile == 'comparison':
+                # Targeted flags are added as explicit schema-ordinal model
+                # features by PoseGuidedDesign, after the native target-template
+                # featurization. Do not put schema ordinals in epitope_residues:
+                # with a full-length antigen template that field ambiguously
+                # switches to template-author residue numbering.
+                job_cfg['epitope_residues'] = []
+                if site_enabled:
+                    job_cfg['epitope_chain'] = plan['targeted_site']['chain']
+                job_cfg.setdefault('nominee', {})['has_epitope'] = site_enabled
             job_cfg['pose_guidance'] = {
                 'plan': str(root / 'plan.json'), 'plan_sha256': digest(root / 'plan.json'),
                 'pairs': pairs, 'rotation_degrees': angle, 'translation_angstrom': shift,
-                'seed': args.seed + rep,
+                'seed': args.seed + rep, 'targeted_site_enabled': site_enabled,
             }
             if label == 'cone16':
                 job_cfg['pose_guidance']['approach_angle_range_degrees'] = list(interval)
@@ -166,7 +198,7 @@ def prepare(args: argparse.Namespace) -> None:
             write_json(path, job_cfg)  # JSON is also valid YAML for OmegaConf.
             jobs.append({'index': len(jobs), 'arm': label, 'replicate': rep,
                          'config': str(path.relative_to(root)), 'sha256': digest(path),
-                         'requested_backbones': n})
+                         'requested_backbones': n, 'targeted_site_enabled': site_enabled})
     manifest = {
         'schema_version': 1, 'profile': args.profile, 'jobs': jobs,
         'plan_sha256': digest(root / 'plan.json'), 'source_config_sha256': digest(base_path),
@@ -182,6 +214,21 @@ def prepare(args: argparse.Namespace) -> None:
                       'target_fit_rmsd_max': 3},
         'angular_reference': 'deviation_from_selected_source_CDR_to_framework_axis_after_target_alignment',
         'angle_range_requested_degrees': list(interval) if interval else None,
+        'comparison_primary_contrast': (
+            'targeted_only_vs_cone16_same_epitope_and_seeds'
+            if args.profile == 'comparison' else None
+        ),
+        'targeted_site': plan.get('targeted_site'),
+        'backbones_per_replicate': n,
+        'replicates': replicates,
+        'sequences_per_backbone': args.sequences_per_backbone,
+        'inverse_folder': args.inverse_folder,
+        'primary_endpoint': (
+            'generated_backbone_approach_in_requested_angle_interval_AND_'
+            'at_least_three_source_site_antigen_CAs_within_site_cutoff_of_generated_CDR_CAs'
+            if args.profile == 'comparison' else None
+        ),
+        'paired_design': 'matched_random_seed_and_backbone_index_across_arms',
         'selection_note': 'Generation-guidance range is a preference. Evaluate actual unrestrained output in the same interval; these are not validated binding cutoffs.',
         'framework_template_disabled': True, 'refolds_unrestrained': True,
         'budget_note': 'Five diffusion samples per designed sequence; these share a trunk evaluation.',
@@ -191,7 +238,10 @@ def prepare(args: argparse.Namespace) -> None:
     write_json(root / 'manifest.json', manifest)
     print(json.dumps({'experiment': str(root), 'jobs': len(jobs),
                       'requested_backbones': n * len(jobs),
-                      'requested_refolds': 0 if args.inverse_folder == 'none' else n * len(jobs) * args.sequences_per_backbone * 5}, indent=2))
+                      'requested_refolds': 0 if args.inverse_folder == 'none' else n * len(jobs) * args.sequences_per_backbone * 5,
+                      'targeted_site_chain': plan['targeted_site']['chain'] if plan.get('targeted_site') else None,
+                      'targeted_site_residues': len(plan['targeted_site']['schema_positions_1_based']) if plan.get('targeted_site') else 0,
+                      'site_cutoff_angstrom': plan['targeted_site']['source_cdr_ca_cutoff_angstrom'] if plan.get('targeted_site') else None}, indent=2))
 
 
 def job_config(root: Path, index: int) -> tuple[dict[str, Any], Any, Path]:
@@ -254,6 +304,54 @@ def verify_writable_runtime() -> dict[str, str]:
     return checked
 
 
+def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]:
+    """Cheap full-budget geometry check; no sequence featurization or GPU work.
+
+    Preflight's two real featurized items only check the leading RNG draws.
+    A larger run must verify all requested angular-pose draws are encodable
+    before SLURM submission, using the same deterministic seeds as pose_task.
+    """
+    requested = int(cfg.num_backbones)
+    if requested < 1:
+        raise ValueError('no backbones requested')
+    setting = cfg.pose_guidance
+    target = np.asarray(plan['target_coords'], dtype=float)[plan['target_landmarks']]
+    source_fw = np.asarray(plan['source_framework_coords'], dtype=float)
+    axis = np.asarray(plan['source_axis'], dtype=float)
+    patch = target.mean(0)
+    binder_ids = plan['binder_landmarks']
+    requested_pairs = int(setting.pairs)
+    min_finite = requested_pairs
+    max_overflow = 0
+    for bidx in range(requested):
+        seed = int.from_bytes(
+            hashlib.sha256(f'{setting.seed}:{bidx}'.encode()).digest()[:4], 'big'
+        )
+        interval = setting.get('approach_angle_range_degrees')
+        if interval is not None:
+            framework, _ = cone_placement(
+                source_fw, axis, seed, float(interval[0]), float(interval[1]),
+                float(setting.translation_angstrom), pivot=patch,
+            )
+        else:
+            framework = jitter(
+                source_fw, seed, float(setting.rotation_degrees),
+                float(setting.translation_angstrom)
+            )
+        _, _, records = cross_distogram(
+            8, [0, 1, 2, 3], [4, 5, 6, 7],
+            target, framework[binder_ids], requested_pairs,
+        )
+        informative = sum(bool(row['finite_distance_information']) for row in records)
+        min_finite = min(min_finite, informative)
+        max_overflow = max(max_overflow, requested_pairs - informative)
+    return {
+        'checked_backbones': requested,
+        'minimum_finite_guidance_pairs': min_finite,
+        'maximum_overflow_guidance_pairs': max_overflow,
+    }
+
+
 def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, Any]:
     _, cfg, _ = job_config(root, index)
     import torch
@@ -274,9 +372,31 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
     check_runtime = require_gpu or os.environ.get('POSE_VERIFY_WRITABLE_RUNTIME') == '1'
     runtime_writable_dirs = verify_writable_runtime() if check_runtime else None
     task = PoseGuidedDesign(cfg)
+    all_guide_geometry = verify_all_proposed_guides(cfg, task.plan)
     if not len(task):
         raise ValueError('no generation items; fresh runs must not inherit completed outputs')
     features = [task[i] for i in range(min(2, len(task)))]
+    site = task.plan.get('targeted_site')
+    expected_epitope_count = 0
+    if site:
+        enabled = bool(cfg.pose_guidance.get('targeted_site_enabled', False))
+        expected = {pos - 1 for pos in site['schema_positions_1_based']} if enabled else set()
+        expected_epitope_count = len(expected)
+        for featureset in features:
+            offsets, offset = {}, 0
+            for name, chain in featureset['struct'].chains.items():
+                offsets[name] = offset
+                offset += len(chain.rname)
+            site_start = offsets[site['chain']]
+            n_antigen = len(featureset['struct'].chains[site['chain']].rname)
+            actual = set(int(x) for x in np.flatnonzero(
+                featureset['is_epitope'][site_start:site_start + n_antigen]
+            ))
+            if actual != expected:
+                raise ValueError(
+                    f'targeted comparison epitope mismatch: expected {sorted(expected)}, '
+                    f'actual {sorted(actual)}'
+                )
     batch = collate(features, token_multiple=int(cfg.get('pad_tokens_to_multiple', 1)))
     if int(cfg.pose_guidance.pairs):
         size = batch['restype'].shape[1]
@@ -297,7 +417,12 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               'inverse_folder': cfg.inverse_folder.type,
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
               'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT'),
-              'runtime_writable_dirs': runtime_writable_dirs}
+              'runtime_writable_dirs': runtime_writable_dirs,
+              'targeted_site_enabled': bool(cfg.pose_guidance.get('targeted_site_enabled', False)),
+              'targeted_epitope_tokens': expected_epitope_count,
+              'targeted_site_chain': site['chain'] if site else None,
+              'targeted_site_schema_positions': site['schema_positions_1_based'] if site else None,
+              'all_proposed_guide_geometry': all_guide_geometry}
     report['pose_anchor_diagnostics'] = [
         {
             'backbone_index': int(feat['backbone_idx']),
@@ -355,6 +480,78 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None
         writer.writerows(rows)
 
 
+def wilson95(successes: int, total: int) -> tuple[float | None, float | None]:
+    """95% Wilson interval for a binomial backbone recovery fraction."""
+    if total <= 0:
+        return None, None
+    z = 1.959963984540054
+    p = successes / total
+    denom = 1 + z**2 / total
+    mid = (p + z**2 / (2 * total)) / denom
+    half = z * np.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denom
+    return max(0.0, float(mid - half)), min(1.0, float(mid + half))
+
+
+def comparison_summary(
+    manifest: dict[str, Any], rows: list[dict[str, Any]], totals: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Describe targeted-only versus geometry guidance, not proof of binding."""
+    if manifest.get('profile') != 'comparison':
+        return [], {}
+    arms = list(dict.fromkeys(job['arm'] for job in manifest['jobs']))
+    summaries = []
+    for arm in arms:
+        outputs = [row for row in rows if row['kind'] == 'backbone' and row['arm'] == arm]
+        task_rows = [row for row in totals if row['arm'] == arm]
+        requested = sum(int(row['requested_backbones']) for row in task_rows)
+        n = len(outputs)
+        angle_success = sum(bool(row['in_requested_angle']) for row in outputs)
+        primary_success = sum(bool(row['primary_hit']) for row in outputs)
+        confidence_low, confidence_high = wilson95(primary_success, n)
+        angles = [float(row['approach_degrees']) for row in outputs]
+        contacts = [float(row['site_contact_fraction']) for row in outputs]
+        summaries.append({
+            'arm': arm,
+            'targeted_site_enabled': bool(task_rows[0]['targeted_site_enabled']),
+            'replicates_requested': len(task_rows),
+            'replicates_completed': sum(row['status'] == 'completed' for row in task_rows),
+            'status': (
+                'completed' if n == requested and all(row['status'] == 'completed' for row in task_rows)
+                else 'partial_or_not_run'
+            ),
+            'requested_backbones': requested,
+            'generated_backbones': n,
+            'in_angle_range': angle_success,
+            'in_angle_range_fraction': angle_success / n if n else None,
+            'source_site_contact_3plus': sum(int(row['site_contacted_residues']) >= 3 for row in outputs),
+            'primary_geometry_and_site_hits': primary_success,
+            'primary_hit_fraction': primary_success / n if n else None,
+            'primary_hit_wilson95_low': confidence_low,
+            'primary_hit_wilson95_high': confidence_high,
+            'median_approach_degrees': statistics.median(angles) if angles else None,
+            'median_source_site_contact_fraction': statistics.median(contacts) if contacts else None,
+            'gpu_wall_seconds': sum(float(row['wall_seconds'] or 0) for row in task_rows),
+        })
+    by_arm = {row['arm']: row for row in summaries}
+    target, cone = by_arm['targeted'], by_arm['cone16']
+    absolute = (
+        float(cone['primary_hit_fraction'] - target['primary_hit_fraction'])
+        if cone['primary_hit_fraction'] is not None and target['primary_hit_fraction'] is not None
+        else None
+    )
+    return summaries, {
+        'primary_comparison': 'cone16_vs_targeted_same_CDR_derived_antigen_site',
+        'angle_range_degrees': manifest['angle_range_requested_degrees'],
+        'source_site': manifest['targeted_site'],
+        'absolute_primary_hit_fraction_difference': absolute,
+        'complete': all(row['status'] == 'completed' for row in summaries),
+        'interpretation': (
+            'Descriptive comparison of generation geometry and antigen-site '
+            'proximity only; not an affinity, neutralization or refold success test.'
+        ),
+    }
+
+
 def analyse(root: Path) -> None:
     manifest = load_json(root / 'manifest.json')
     plan = load_json(root / 'plan.json')
@@ -379,6 +576,7 @@ def analyse(root: Path) -> None:
                 errors.append({'path': str(receipt_path), 'error': 'mixed runtime/checkpoint/MSA inputs across conditions'})
         total = dict(job, generated_backbones=0, refolds=0, geometry_matched_refolds=0,
                      unique_matched_sequences=0, matched_backbones=0,
+                     in_range_backbones=0, site_contacted_backbones=0, primary_hits=0,
                      status=receipt.get('status', 'not_run'), wall_seconds=receipt.get('wall_seconds', ''))
         designed = sorted(output.rglob('sample*_design*.fasta'))
         total['designed_sequences'] = len(designed)
@@ -387,9 +585,21 @@ def analyse(root: Path) -> None:
         for backbone in sorted(output.rglob('backbone.cif')):
             total['generated_backbones'] += 1
             try:
-                bt, bf, bb = observed_arrays(read_chains(backbone), plan)
+                observed_backbone = read_chains(backbone)
+                bt, bf, bb = observed_arrays(observed_backbone, plan)
                 bm = pose_metrics(plan['target_coords'], plan['source_framework_coords'], bt, bf,
                                   plan['source_axis'], target_patch_center=patch_center)
+                site_metrics = site_contact_metrics(observed_backbone, plan)
+                angle_in_range = (
+                    threshold['approach_degrees_min'] - 1e-5
+                    <= bm['approach_degrees']
+                    <= threshold['approach_degrees_max'] + 1e-5
+                )
+                site_hits = (
+                    int(site_metrics['site_contacted_residues']) >= 3
+                    if plan.get('targeted_site') else False
+                )
+                primary_hit = bool(angle_in_range and site_hits) if plan.get('targeted_site') else None
                 backbone_match = _passes_geometry(bm, threshold)
                 guidance_file = backbone.parent / 'pose_guidance.json'
                 guidance = load_json(guidance_file) if guidance_file.is_file() else {}
@@ -403,8 +613,14 @@ def analyse(root: Path) -> None:
                     'maximum_anchor_distance_angstrom': guidance.get('maximum_anchor_distance_angstrom'),
                 }
                 total['matched_backbones'] += int(backbone_match)
+                total['in_range_backbones'] += int(angle_in_range)
+                total['site_contacted_backbones'] += int(site_hits)
+                total['primary_hits'] += int(bool(primary_hit))
                 rows.append(dict(arm=job['arm'], replicate=job['replicate'], kind='backbone',
-                                 cif=str(backbone), geometry_match=backbone_match, **guide_fields, **bm))
+                                 cif=str(backbone), geometry_match=backbone_match,
+                                 targeted_site_enabled=job.get('targeted_site_enabled', False),
+                                 in_requested_angle=angle_in_range, primary_hit=primary_hit,
+                                 **site_metrics, **guide_fields, **bm))
                 for confidence_path in sorted((backbone.parent / 'refolds').glob('*_confidence.json')):
                     total['refolds'] += 1
                     cif = confidence_path.with_name(confidence_path.name.replace('_confidence.json', '.cif'))
@@ -413,6 +629,7 @@ def analyse(root: Path) -> None:
                         rt, rf, rb = observed_arrays(chains, plan)
                         metrics = pose_metrics(plan['target_coords'], plan['source_framework_coords'], rt, rf,
                                                plan['source_axis'], target_patch_center=patch_center)
+                        refold_site_metrics = site_contact_metrics(chains, plan)
                         rotation, translation = align(rt, bt)
                         self_rmsd = rmsd(rb @ rotation + translation, bb)
                         geometry_match = _passes_geometry(metrics, threshold)
@@ -425,7 +642,14 @@ def analyse(root: Path) -> None:
                         row = dict(arm=job['arm'], replicate=job['replicate'], kind='refold', cif=str(cif),
                                    sequence=sequence, iptm=iptm, scDockQ_json=json.dumps(confidence.get('scDockQ')),
                                    self_binder_rmsd=self_rmsd, geometry_match=geometry_match,
-                                   geometry_and_self_consistency=eligible, **guide_fields, **metrics)
+                                   geometry_and_self_consistency=eligible,
+                                   targeted_site_enabled=job.get('targeted_site_enabled', False),
+                                   in_requested_angle=(
+                                       threshold['approach_degrees_min'] - 1e-5
+                                       <= metrics['approach_degrees']
+                                       <= threshold['approach_degrees_max'] + 1e-5
+                                   ),
+                                   **refold_site_metrics, **guide_fields, **metrics)
                         rows.append(row)
                         if eligible:
                             total['geometry_matched_refolds'] += 1
@@ -445,6 +669,7 @@ def analyse(root: Path) -> None:
         total['missing_refolds_from_sequences'] = max(0, total['expected_refolds_from_sequences'] - total['refolds'])
         total['missing_backbones'] = job['requested_backbones'] - total['generated_backbones']
         total['geometry_yield_per_requested_backbone'] = total['matched_backbones'] / job['requested_backbones']
+        total['primary_hit_fraction'] = total['primary_hits'] / total['generated_backbones'] if total['generated_backbones'] else None
         total['evaluated_angle_min_degrees'] = threshold.get('approach_degrees_min', 0)
         total['evaluated_angle_max_degrees'] = threshold['approach_degrees_max']
         totals.append(total)
@@ -455,16 +680,33 @@ def analyse(root: Path) -> None:
         'centroid_shift_angstrom', 'patch_radius_change_angstrom', 'body_rotation_degrees', 'approach_degrees',
         'guide_approach_deviation_degrees', 'guide_azimuth_degrees', 'guide_sampling_policy',
         'requested_guidance_pairs', 'informative_guidance_pairs', 'overflow_guidance_pairs',
-        'maximum_anchor_distance_angstrom',
+        'maximum_anchor_distance_angstrom', 'targeted_site_enabled',
+        'in_requested_angle', 'primary_hit',
+        'site_contacted_residues', 'site_contact_fraction',
+        'site_contact_share_of_all_contacts', 'cdr_residue_count',
         'self_binder_rmsd',
         'geometry_match', 'geometry_and_self_consistency'])
     write_csv(destination / 'conditions.csv', totals, ['index', 'arm', 'replicate', 'status', 'requested_backbones',
         'generated_backbones', 'missing_backbones', 'matched_backbones', 'geometry_yield_per_requested_backbone',
         'designed_sequences', 'expected_refolds_from_sequences', 'refolds', 'missing_refolds_from_sequences',
         'geometry_matched_refolds', 'unique_matched_sequences',
+        'in_range_backbones', 'site_contacted_backbones', 'primary_hits', 'primary_hit_fraction',
+        'targeted_site_enabled',
         'evaluated_angle_min_degrees', 'evaluated_angle_max_degrees', 'wall_seconds'])
     write_csv(destination / 'protenix_inputs.csv', list(exports.values()),
               ['name', 'sequence', 'promera_reference_cif', 'arm', 'replicate', 'iptm'])
+    if manifest.get('profile') == 'comparison':
+        comparisons, effect = comparison_summary(manifest, rows, totals)
+        write_csv(destination / 'comparison.csv', comparisons, [
+            'arm', 'targeted_site_enabled', 'replicates_requested',
+            'replicates_completed', 'status', 'requested_backbones',
+            'generated_backbones', 'in_angle_range', 'in_angle_range_fraction',
+            'source_site_contact_3plus', 'primary_geometry_and_site_hits',
+            'primary_hit_fraction', 'primary_hit_wilson95_low',
+            'primary_hit_wilson95_high', 'median_approach_degrees',
+            'median_source_site_contact_fraction', 'gpu_wall_seconds',
+        ])
+        write_json(destination / 'comparison.json', effect)
     write_json(destination / 'errors.json', errors)
     print(json.dumps({'analysis': str(destination), 'geometry_matched_unique_sequences': len(exports),
                       'parse_errors': len(errors), 'note': 'Exports are screening inputs, not validated binders or production passers.'}, indent=2))
@@ -482,7 +724,9 @@ def main() -> None:
     prep.add_argument('--target-map', help='JSON map: runtime chain -> guide chain; default identical IDs')
     prep.add_argument('--msa-dir')
     prep.add_argument('--out', required=True)
-    prep.add_argument('--profile', choices=['smoke', 'pilot'], default='smoke')
+    prep.add_argument('--profile', choices=['smoke', 'pilot', 'comparison'], default='smoke')
+    prep.add_argument('--site-cutoff-angstrom', type=float, default=10.0,
+                      help='comparison: antigen residues within this CA distance of source CDRs (default 10 A)')
     prep.add_argument('--angle-range', metavar='MIN:MAX',
                       help='source-relative angular guidance interval in degrees (e.g. 15:35)')
     prep.add_argument('--angle-translation-angstrom', type=float, default=0.0,

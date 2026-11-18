@@ -4,6 +4,85 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## Larger 0–20 degree site-matched comparison (B004 / G047 / 5_389)
+
+The original two-backbone smoke established that sparse pose distances can
+steer backbone orientation, but **its control was entirely untargeted**
+(`epitope_tokens=0`). It could not distinguish additional orientation guidance
+from the model's natural pose distribution around the same antigen site.
+
+This follow-up derives a *single antigen residue site* from the canonical
+B004/G047/5_389 reference: target chain **A**, schema residues with C-alpha
+within **10 A** of a reference CDR C-alpha (33 residues in the supplied
+reference backbone). This is a source-guided **site** definition, not a
+framework template. The same antigen epitope feature mask applies to all
+site-aware conditions. Because the NOMINEE antigen template has different
+author residue numbering from the 424-residue cropped target, the experiment
+applies the exact schema-ordinal epitope token mask after native
+featurization rather than ambiguously passing source ordinals into
+`epitope_residues`. It also sets the correct epitope chain and sample contact
+metadata. No source files or production code are modified.
+
+| Arm | Antigen site target? | Target–binder distance pairs | Purpose |
+| --- | --- | ---: | --- |
+| `control` | No | 0 | Context: unconstrained natural orientation distribution |
+| `targeted` | **Yes** | 0 | **Primary control**: ordinary epitope targeting without pose guidance |
+| `anchors16` | **Yes** | 16 (reference) | Focus on essentially the original pose, with backbone diffusion |
+| `cone16` | **Yes** | 16 (0–20 degree guide) | **Test**: novel backbones in the selected orientation neighbourhood |
+
+The primary comparison is **`cone16` versus `targeted`**, not versus the
+unconstrained control. Same target MSA, template, VHH framework, CDR length
+distributions, recycled model, inverse folding, refolding settings, source
+seed and `backbone_idx` schedule are reused across conditions. Only
+the 16 cross-chain pair features differ between targeted and guided arms.
+The fixed-original-pose arm measures how narrowly 16 unchanged source
+distances focus sampling.
+
+On WEHI Milton, from the existing experimental checkout:
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance pull --ff-only
+module load apptainer
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --profile comparison \
+  --angle-range 0:20 \
+  --backbones 32 \
+  --replicates 3
+```
+
+This prepares **12 array tasks** (4 arms x 3 independent replicates),
+**384 requested backbones** (96 per arm) and up to **1,920 unrestrained
+refolds**, using the original Boltz-IF inverse-folder setting. Array
+concurrency remains **one A30 at a time** with `gpuq`,
+`--gres=gpu:A30:1`, and 12 h maximum per task. No GPU work runs on the
+login node. The launcher preflights **every task** and checks *all* requested
+guide placements using inexpensive CPU geometry before submission. An
+optional `--site-cutoff-angstrom` changes the single common C-alpha site
+neighbourhood, with 10 A as the default.
+
+After the array finishes, analyse the printed experiment path using the
+usual `container.sh analyse --experiment ...` command. In addition to
+`analysis/structures.csv` and `analysis/conditions.csv`, the comparison
+writes `analysis/comparison.csv` and `analysis/comparison.json`.
+The primary prespecified **backbone** endpoint is both:
+
+1. Measured source-relative approach angle inside 0–20 degrees; and
+2. At least three of the common source-site antigen residues within 10 A
+   C-alpha distance of the *generated* binder CDRs.
+
+`comparison.csv` reports the in-range fraction alone, joint endpoint,
+Wilson 95% intervals, median approach angles and site-contact retention.
+`comparison.json` reports the descriptive risk difference between cone16
+and targeted-only, and marks partial results rather than claiming
+success when tasks are missing. The refold results remain separate
+secondary diagnostics: good backbone steering does not imply
+thermodynamically stable, binding or neutralising nanobodies.
+This is a single-pose computational comparison, not proof of performance
+across epitopes or pathogens.
+
 ## One-command Pose Atlas smoke (B004 / G047 / 5_389)
 
 The B004 Pose Atlas shows **G047 → 5_389** as the first CDR-driven

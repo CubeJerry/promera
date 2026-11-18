@@ -386,6 +386,98 @@ def build_plan(chains: dict[str, Any], schema: dict[str, Any], pattern: str,
     }
 
 
+def targeted_site_from_reference(
+    chains: dict[str, Any], plan: dict[str, Any], cutoff_angstrom: float = 10.0
+) -> dict[str, Any]:
+    """Site-only comparator: source CDR-proximal antigen C-alpha neighbourhood.
+
+    Select an *antigen residue set*, not a nanobody pose. The same explicit
+    epitope mask is fed to targeted-only and all geometry-guided arms. Keep
+    sequence-ordinal coordinates (not mmCIF author IDs), avoiding ambiguous
+    residue numbering when the antigen is cropped from a larger template.
+    """
+    if not np.isfinite(cutoff_angstrom) or not 5 <= cutoff_angstrom <= 25:
+        raise ValueError('site C-alpha cutoff must be 5-25 Angstrom')
+    if len(plan['target_sequences']) != 1:
+        raise ValueError(
+            'targeted comparison currently supports one antigen chain; '
+            'do not silently discard an interface spanning multiple chains'
+        )
+    chain_name = next(iter(plan['target_sequences']))
+    binder = chains[plan['guide_binder_chain']]
+    _, cdr_ordinals = framework_map(binder['sequence'], plan['framework'])
+    cdr_ca = xyz(binder['coords'][cdr_ordinals])
+    target_ca = xyz(plan['target_coords'])
+    labels = plan['target_labels']
+    if len(labels) != len(target_ca):
+        raise ValueError('target coordinates and ordinal labels disagree')
+    contact_distance = np.linalg.norm(
+        target_ca[:, None, :] - cdr_ca[None, :, :], axis=-1
+    ).min(axis=1)
+    qualifying = [
+        (int(ordinal) + 1, float(contact_distance[i]))
+        for i, (chain, ordinal) in enumerate(labels)
+        if chain == chain_name and contact_distance[i] <= cutoff_angstrom
+    ]
+    positions = sorted(set(pos for pos, _ in qualifying))
+    if not 4 <= len(positions) <= 80:
+        raise ValueError(
+            f'CDR-proximal site has {len(positions)} residues within '
+            f'{cutoff_angstrom:g} A (required 4-80). Check the source pose '
+            'or explicitly choose a different site cutoff.'
+        )
+    sequence = plan['target_sequences'][chain_name]
+    if any(p < 1 or p > len(sequence) for p in positions):
+        raise ValueError('derived epitope position falls outside target sequence')
+    return {
+        'chain': chain_name,
+        'schema_positions_1_based': positions,
+        'source_cdr_ca_cutoff_angstrom': float(cutoff_angstrom),
+        'source_cdr_residue_count': len(cdr_ordinals),
+        'source_target_residue_count': len(positions),
+        'method': 'source_CDR_CA_to_target_CA_within_cutoff',
+        'residue_numbering': '1-based in exact target schema (not template author IDs)',
+        'nearest_cdr_ca_distance_angstrom': {
+            str(pos): distance for pos, distance in qualifying
+        },
+    }
+
+
+def site_contact_metrics(chains: dict[str, Any], plan: dict[str, Any]) -> dict[str, float | int | None]:
+    """Observed CDR/antigen contacts to the *shared* source-defined site.
+
+    Always measure the full generated CDR (not the reference CDR geometry).
+    These are C-alpha proximity diagnostics, not predictions of binding.
+    """
+    site = plan.get('targeted_site')
+    if not site:
+        return {
+            'site_contacted_residues': None,
+            'site_contact_fraction': None,
+            'site_contact_share_of_all_contacts': None,
+            'cdr_residue_count': None,
+        }
+    binder = chains[plan['binder_chain']]
+    _, cdr_ordinals = framework_map(binder['sequence'], plan['framework'])
+    cdr_xyz = xyz(binder['coords'][cdr_ordinals])
+    chain = site['chain']
+    antigen = xyz(chains[chain]['coords'])
+    threshold = float(site['source_cdr_ca_cutoff_angstrom'])
+    nearest = np.linalg.norm(
+        antigen[:, None, :] - cdr_xyz[None, :, :], axis=-1
+    ).min(axis=1)
+    contacted = set(int(i) + 1 for i in np.flatnonzero(nearest <= threshold))
+    target = set(site['schema_positions_1_based'])
+    site_touches = len(contacted & target)
+    return {
+        'site_contacted_residues': site_touches,
+        'site_contact_fraction': site_touches / len(target),
+        'site_contact_share_of_all_contacts':
+            site_touches / len(contacted) if contacted else 0.0,
+        'cdr_residue_count': len(cdr_ordinals),
+    }
+
+
 def observed_arrays(chains: dict[str, Any], plan: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     for name, sequence in plan['target_sequences'].items():
         if chains[name]['sequence'] != sequence:

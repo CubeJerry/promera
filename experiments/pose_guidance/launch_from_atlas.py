@@ -189,7 +189,10 @@ def launch(args: argparse.Namespace) -> None:
         raise ValueError("Set a degree interval like --angle-range 15:35 (0 <= min <= max <= 180)")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     tag = re.sub(r"[^A-Za-z0-9-]+", "-", interval)
-    name = f"{selection['pose_id']}-angle-{tag}-smoke-{stamp}"
+    profile = getattr(args, "profile", "smoke")
+    if profile not in {"smoke", "comparison"}:
+        raise ValueError("launcher profile must be smoke or comparison")
+    name = f"{selection['pose_id']}-angle-{tag}-{profile}-{stamp}"
     experiment = work / name
     if experiment.exists():
         raise ValueError(f"Experiment directory already exists: {experiment}")
@@ -206,19 +209,29 @@ def launch(args: argparse.Namespace) -> None:
     print("Backbone SHA256:", _sha256(selection["canonical_backbone"]), flush=True)
     print("Matching batch configuration:", selection["base_config"], flush=True)
     print("Source-relative angle interval:", interval, "degrees", flush=True)
+    print("Experimental profile:", profile, flush=True)
     print("New experiment directory:", experiment, flush=True)
     if args.dry_run:
         print("DRY RUN: no experiment prepared and no SLURM jobs submitted.", flush=True)
         return
     launcher = here / "container.sh"
-    subprocess.run([
+    prepare_command = [
         "bash", str(launcher), "prepare",
         "--base-config", str(selection["base_config"]),
         "--pose", str(selection["canonical_backbone"]),
         "--out", str(experiment),
-        "--profile", "smoke",
+        "--profile", profile,
         "--angle-range", interval,
-    ], check=True, env=env)
+    ]
+    if getattr(args, "backbones", None) is not None:
+        prepare_command.extend(["--backbones", str(args.backbones)])
+    if getattr(args, "replicates", None) is not None:
+        prepare_command.extend(["--replicates", str(args.replicates)])
+    if profile == "comparison":
+        prepare_command.extend([
+            "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0))
+        ])
+    subprocess.run(prepare_command, check=True, env=env)
     (experiment / "source_atlas_selection.json").write_text(json.dumps({
         "pose_id": selection["pose_id"],
         "source_run": str(selection["run"]),
@@ -230,22 +243,34 @@ def launch(args: argparse.Namespace) -> None:
         "source_promera_backend_config_sha256": _sha256(selection["base_config"]),
         "approach_angle_range_degrees": list(map(float, interval.split(":"))),
     }, indent=2) + "\n")
-    for index in range(3):
-        print(f"Preflight {index}/2:", flush=True)
+    prepared_manifest = _load_json(experiment / "manifest.json")
+    jobs = prepared_manifest.get("jobs", [])
+    if not isinstance(jobs, list) or not jobs:
+        raise ValueError("Prepared experiment contains no jobs")
+    array = f"0-{len(jobs)-1}%1"
+    for index, job in enumerate(jobs):
+        if job.get("index") != index:
+            raise ValueError("Prepared job indices are not contiguous")
+        print(f"CPU preflight {index+1}/{len(jobs)} ({job['arm']} rep{job['replicate']}):",
+              flush=True)
         subprocess.run(["bash", str(launcher), "preflight",
                         "--experiment", str(experiment), "--job", str(index)],
                        check=True, env=env)
-    print("All three CPU preflights passed.", flush=True)
+    print(f"All {len(jobs)} CPU preflights passed.", flush=True)
     if args.no_submit:
         print("No job submitted (--no-submit).", flush=True)
         print(f"To submit: POSE_SOURCE={repo} POSE_WORK={work} "
-              f"POSE_EXPERIMENT={experiment} sbatch --array=0-2%1 {here / 'run.slurm'}")
+              f"POSE_EXPERIMENT={experiment} sbatch --array={array} {here / 'run.slurm'}")
         return
     if not shutil_which_sbatch():
         raise ValueError("sbatch not found on PATH; run from the HPC login node")
-    subprocess.run(["sbatch", "--array=0-2%1", str(here / "run.slurm")],
+    subprocess.run(["sbatch", f"--array={array}", str(here / "run.slurm")],
                    check=True, env=env, cwd=str(work))
-    print("Submitted: 3 arms x 2 backbones = 6 backbones, up to 30 refolds.", flush=True)
+    n_backbones = sum(int(job['requested_backbones']) for job in jobs)
+    sequences = int(prepared_manifest.get('sequences_per_backbone', 1))
+    inverse = prepared_manifest.get('inverse_folder', 'boltzif')
+    refolds = 0 if inverse == 'none' else n_backbones * sequences * 5
+    print(f"Submitted: {len(jobs)} jobs, {n_backbones} backbones, up to {refolds} refolds.", flush=True)
     print(f"After completion: bash {launcher} analyse --experiment {experiment}", flush=True)
 
 
@@ -259,6 +284,14 @@ def main() -> int:
     parser.add_argument("--run", required=True, help="Completed NOMINEE run root containing analysis/epitope_scan")
     parser.add_argument("--pose-id", default=DEFAULT_POSE)
     parser.add_argument("--angle-range", default="15:35", help="Deviation from selected VHH approach (degrees)")
+    parser.add_argument("--profile", choices=("smoke", "comparison"), default="smoke",
+                        help="smoke: three-arm small run; comparison: 4-arm same-site benchmark")
+    parser.add_argument("--backbones", type=int,
+                        help="backbones per condition/replicate (comparison default: 32)")
+    parser.add_argument("--replicates", type=int,
+                        help="independent replicate groups per arm (comparison default: 3)")
+    parser.add_argument("--site-cutoff-angstrom", type=float, default=10.0,
+                        help="comparison: C-alpha source CDR contact neighbourhood (default 10 A)")
     parser.add_argument("--nominee-config", default=os.environ.get(
         "NOMINEE_CONFIG", "/vast/home/users/chen.je/dev/config.yaml"))
     parser.add_argument("--work", default=os.environ.get("POSE_WORK"),

@@ -611,6 +611,129 @@ def angular_fixture(prepared, *, interval="15:35", translation=0.0):
     return Path(args.out)
 
 
+def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2):
+    args = argparse.Namespace(
+        base_config=str(prepared.parent / 'base.yaml'),
+        pose=str(prepared.parent / 'guide.cif'),
+        guide_binder_chain='N', target_map='{"K":"L"}',
+        msa_dir=None, out=str(prepared.parent / 'comparison-experiment'),
+        backbones=backbones, replicates=replicates, batch_size=1,
+        profile='comparison', seed=100, inverse_folder='boltzif',
+        sequences_per_backbone=1, angle_range=interval,
+        angle_translation_angstrom=0.0,
+        # This synthetic binder is ~20 A from the tiny synthetic target;
+        # the real B004 source yields 33 CDR-proximal antigen residues at 10 A.
+        site_cutoff_angstrom=25.0,
+    )
+    experiment.prepare(args)
+    return Path(args.out)
+
+
+def test_target_site_selects_antigen_schema_ordinals_not_template_ids():
+    chains, _, plan = fixtures()
+    site = g.targeted_site_from_reference(chains, plan, 25.0)
+    assert site['chain'] == 'K'
+    assert site['schema_positions_1_based'] == [1, 2, 3, 4, 5]
+    assert site['residue_numbering'].startswith('1-based in exact target schema')
+    assert all(0 < value <= 25 for value in site['nearest_cdr_ca_distance_angstrom'].values())
+    with pytest.raises(ValueError, match='cutoff'):
+        g.targeted_site_from_reference(chains, plan, 30.0)
+    with pytest.raises(ValueError, match='CDR-proximal site'):
+        g.targeted_site_from_reference(chains, plan, 5.0)
+
+
+def test_comparison_creates_paired_site_only_and_guided_arms(prepared):
+    root = comparison_fixture(prepared)
+    manifest = experiment.load_json(root / 'manifest.json')
+    assert manifest['profile'] == 'comparison'
+    assert len(manifest['jobs']) == 8
+    assert manifest['angle_range_requested_degrees'] == [0, 20]
+    assert manifest['comparison_primary_contrast'] == 'targeted_only_vs_cone16_same_epitope_and_seeds'
+    assert manifest['targeted_site']['schema_positions_1_based'] == [1, 2, 3, 4, 5]
+    assert sum(job['requested_backbones'] for job in manifest['jobs']) == 24
+    names = [job['arm'] for job in manifest['jobs']]
+    assert names == ['control']*2 + ['targeted']*2 + ['anchors16']*2 + ['cone16']*2
+    assert [job['targeted_site_enabled'] for job in manifest['jobs']] == [False]*2 + [True]*6
+    by_arm = {}
+    for job in manifest['jobs']:
+        _, cfg, _ = experiment.job_config(root, job['index'])
+        by_arm.setdefault(job['arm'], {})[job['replicate']] = cfg
+        assert cfg.epitope_residues == []
+        assert cfg.pose_guidance.seed == 100 + job['replicate']
+        assert cfg.binder.framework_template is None
+    for rep in (0, 1):
+        assert all(by_arm[a][rep].pose_guidance.seed == by_arm['targeted'][rep].pose_guidance.seed
+                   for a in ('control', 'anchors16', 'cone16'))
+        assert by_arm['targeted'][rep].pose_guidance.pairs == 0
+        assert by_arm['control'][rep].pose_guidance.pairs == 0
+        assert by_arm['anchors16'][rep].pose_guidance.pairs == 16
+        assert by_arm['cone16'][rep].pose_guidance.pairs == 16
+        assert list(by_arm['cone16'][rep].pose_guidance.approach_angle_range_degrees) == [0, 20]
+
+
+def test_comparison_all_site_arms_have_identical_epitope_features(task_module, prepared):
+    module, _ = task_module
+    root = comparison_fixture(prepared)
+    outputs = {}
+    for index in (0, 2, 4, 6):
+        _, cfg, _ = experiment.job_config(root, index)
+        task = module.PoseGuidedDesign(cfg)
+        task.features = [synthetic_features(SEQ, 0)]
+        feat = task[0]
+        site = feat['is_epitope'][len(SEQ):]
+        outputs[index] = site.copy()
+        if index == 0:
+            assert not site.any()
+            assert 'distogram_mask' not in feat
+            assert feat['pose_record']['targeted_site_tokens'] == 0
+        else:
+            assert site.sum() == 5
+            assert all(site)
+            assert feat['pose_record']['targeted_site_enabled'] is True
+            assert feat['pose_record']['targeted_site_tokens'] == 5
+            assert feat['struct'].epitope_residues == [1, 2, 3, 4, 5]
+            if index == 2:
+                assert 'distogram_mask' not in feat
+            else:
+                assert feat['distogram_mask'].sum() == 32
+    np.testing.assert_array_equal(outputs[2], outputs[4])
+    np.testing.assert_array_equal(outputs[2], outputs[6])
+
+
+def test_comparison_analysis_primary_endpoint_and_wilson(prepared):
+    root = comparison_fixture(prepared)
+    manifest = experiment.load_json(root / 'manifest.json')
+    totals = []
+    rows = []
+    for arm in ('control', 'targeted', 'anchors16', 'cone16'):
+        for rep in (0, 1):
+            totals.append({
+                'arm': arm, 'replicate': rep, 'status': 'completed',
+                'requested_backbones': 2, 'targeted_site_enabled': arm != 'control',
+                'wall_seconds': 2.0,
+            })
+        for angle, contacts in [(7, 4), (11, 1), (58, 8), (10, 5)]:
+            hit = 0 <= angle <= 20 and contacts >= 3
+            rows.append({
+                'kind': 'backbone', 'arm': arm, 'approach_degrees': angle,
+                'in_requested_angle': 0 <= angle <= 20, 'primary_hit': hit,
+                'site_contacted_residues': contacts,
+                'site_contact_fraction': contacts / 5,
+            })
+    summary, effect = experiment.comparison_summary(manifest, rows, totals)
+    assert [row['arm'] for row in summary] == ['control', 'targeted', 'anchors16', 'cone16']
+    for row in summary:
+        assert row['status'] == 'completed'
+        assert row['generated_backbones'] == 4
+        assert row['primary_geometry_and_site_hits'] == 2
+        assert row['primary_hit_fraction'] == 0.5
+        assert 0 <= row['primary_hit_wilson95_low'] < 0.5
+        assert 0.5 < row['primary_hit_wilson95_high'] <= 1
+    assert effect['complete'] is True
+    assert effect['absolute_primary_hit_fraction_difference'] == 0.0
+    assert experiment.wilson95(0, 0) == (None, None)
+
+
 def test_prepare_angle_range_separate_generation_arm(prepared):
     root = angular_fixture(prepared)
     manifest = experiment.load_json(root / 'manifest.json')
@@ -809,6 +932,12 @@ def test_atlas_launcher_submits_using_repository_root_not_experiments(
         if argv[0] == "bash" and "prepare" in argv:
             out = Path(argv[argv.index("--out") + 1])
             out.mkdir(parents=True, exist_ok=True)
+            (out / 'manifest.json').write_text(json.dumps({
+                'jobs': [{'index': i, 'arm': arm, 'replicate': 0,
+                          'requested_backbones': 2}
+                         for i, arm in enumerate(('control', 'anchors16', 'cone16'))],
+                'inverse_folder': 'boltzif', 'sequences_per_backbone': 1,
+            }))
         return types.SimpleNamespace(returncode=0)
     monkeypatch.setattr(atlas.subprocess, "run", simulate_run)
     monkeypatch.setattr(atlas, "shutil_which_sbatch", lambda: True)
@@ -823,6 +952,46 @@ def test_atlas_launcher_submits_using_repository_root_not_experiments(
     assert Path(sbatch[-1]) == Path(atlas.__file__).resolve().with_name("run.slurm")
     assert kw["env"]["POSE_SOURCE"] == str(Path(atlas.__file__).resolve().parents[2])
     assert (Path(kw["env"]["POSE_EXPERIMENT"]) / "source_atlas_selection.json").is_file()
+
+
+def test_atlas_launcher_comparison_dynamic_array_and_budget(tmp_path, monkeypatch):
+    import launch_from_atlas as atlas
+    run, *_ = _synthetic_atlas_run(tmp_path)
+    site = tmp_path / 'dev' / 'config.yaml'
+    site.parent.mkdir(parents=True)
+    site.write_text(f"paths:\n  installation_parent: {tmp_path / 'installation'}\n")
+    args = argparse.Namespace(
+        run=str(run), pose_id="B004__G047__5_389", angle_range="0:20",
+        nominee_config=str(site), work=str(tmp_path / 'bench-work'),
+        profile='comparison', backbones=3, replicates=2,
+        site_cutoff_angstrom=10.0, dry_run=False, no_submit=False,
+    )
+    invocations = []
+    def fake_run(argv, **kwargs):
+        invocations.append(list(argv))
+        if 'prepare' in argv:
+            assert argv[argv.index('--profile') + 1] == 'comparison'
+            assert argv[argv.index('--backbones') + 1] == '3'
+            assert argv[argv.index('--replicates') + 1] == '2'
+            assert argv[argv.index('--site-cutoff-angstrom') + 1] == '10.0'
+            root = Path(argv[argv.index('--out') + 1])
+            root.mkdir(parents=True, exist_ok=True)
+            (root / 'manifest.json').write_text(json.dumps({
+                'jobs': [{'index': i, 'arm': arm, 'replicate': rep,
+                          'requested_backbones': 3}
+                         for i, (arm, rep) in enumerate(
+                             (arm, rep) for arm in ('control', 'targeted', 'anchors16', 'cone16')
+                             for rep in range(2))],
+                'sequences_per_backbone': 1, 'inverse_folder': 'boltzif',
+            }))
+        return types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr(atlas.subprocess, 'run', fake_run)
+    monkeypatch.setattr(atlas, 'shutil_which_sbatch', lambda: True)
+    atlas.launch(args)
+    assert len(invocations) == 10  # prepare, eight condition preflights, sbatch
+    assert invocations[-1][0] == 'sbatch'
+    assert '--array=0-7%1' in invocations[-1]
+    assert sorted(cmd[-1] for cmd in invocations[1:-1]) == ['0','1','2','3','4','5','6','7']
 
 
 def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
