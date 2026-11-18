@@ -448,6 +448,7 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
         assert value.is_dir(), name
     assert Path(exported['XDG_RUNTIME_DIR']).parent.parent == work / '.tmp'
     assert exported['TMPDIR'].startswith(str(work / '.tmp'))
+    assert exported.get('POSE_VERIFY_WRITABLE_RUNTIME') == '1'
     assert 'HOME' not in exported, 'Apptainer rejects --env HOME and emits a warning'
     assert '--home' in args
     assert args[args.index('--home') + 1] == (
@@ -928,7 +929,15 @@ def test_real_preflight_report_json_encodes_omegaconf_angle_list(
         return import_module(name)
 
     monkeypatch.setattr(experiment.importlib, "import_module", import_stub)
+    calls = []
+    def fake_writable_probe():
+        calls.append(True)
+        return {'HOME': '/scratch/pose-test-home'}
+    monkeypatch.setattr(experiment, 'verify_writable_runtime', fake_writable_probe)
+    monkeypatch.setenv('POSE_VERIFY_WRITABLE_RUNTIME', '1')
     report = experiment.preflight(root, job)
+    assert calls == [True], 'CPU preflight must validate container HOME before sbatch'
+    assert report['runtime_writable_dirs'] == {'HOME': '/scratch/pose-test-home'}
     assert report["requested_approach_angle_range_degrees"] == expected_angles
     assert report["pair_count"] == (0 if job == 0 else 16)
     if job == 2:

@@ -79,9 +79,10 @@ The wrapper now uses Apptainer's supported
 `--no-mount cwd` (not `--no-home` or `--no-mount home`), and the process is
 started with `/usr/bin/env HOME="$POSE_WORK/.home" python ...`, avoiding
 `APPTAINERENV_HOME` entirely. Existing scratch-backed cache paths and
-the GPU writable-directory probe are retained. The probe still checks
-`Path.home()` and all key caches before loading the model, so an unsupported
-site-specific mount configuration fails before diffusion.
+the writable-directory probe are retained. The experimental wrapper now also
+enables the probe during **CPU preflight**, before submitting an A30 job.
+The probe checks `Path.home()` and all key caches so an unsupported
+site-specific home mount fails before SLURM submission, not during diffusion.
 
 **New experiment:** after updating the branch, rerun the one-command Pose
 Atlas launcher below. This regenerates fingerprinted inputs and submits a

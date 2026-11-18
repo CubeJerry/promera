@@ -107,5 +107,7 @@ args+=(--env "TRANSFORMERS_CACHE=$WORK/.cache/huggingface/transformers")
 args+=(--env "MPLCONFIGDIR=$WORK/.cache/matplotlib" --env "MPLBACKEND=Agg")
 args+=(--env "NUMBA_CACHE_DIR=$WORK/.cache/numba")
 args+=(--env "CUPY_CACHE_DIR=$WORK/.cache/cupy")
+# CPU-side preflight must catch a misconfigured home before any A30 allocation.
+args+=(--env 'POSE_VERIFY_WRITABLE_RUNTIME=1')
 args+=(--env 'PROMERA_RECORD_TRAJECTORY=0' --env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
 apptainer "${args[@]}" "$IMAGE" /usr/bin/env "HOME=$WORK/.home" python /opt/pose_guidance/experiment.py "$@"

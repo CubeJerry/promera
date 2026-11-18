@@ -269,7 +269,10 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
         raise ValueError('this image lacks the current NOMINEE multichain-antigen patch; repair the Promera image through dev')
     if require_gpu and not torch.cuda.is_available():
         raise ValueError('no CUDA GPU visible; run the GPU stage inside a SLURM GPU allocation')
-    runtime_writable_dirs = verify_writable_runtime() if require_gpu else None
+    # The isolated container opts in during CPU preflight as well as the GPU
+    # phase. This catches Apptainer HOME/mount mistakes before sbatch.
+    check_runtime = require_gpu or os.environ.get('POSE_VERIFY_WRITABLE_RUNTIME') == '1'
+    runtime_writable_dirs = verify_writable_runtime() if check_runtime else None
     task = PoseGuidedDesign(cfg)
     if not len(task):
         raise ValueError('no generation items; fresh runs must not inherit completed outputs')
