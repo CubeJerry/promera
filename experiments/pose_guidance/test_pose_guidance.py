@@ -430,8 +430,26 @@ def test_container_argv_and_temporary_cleanup(tmp_path, command, needs_gpu):
     assert ('--nv' in args) is needs_gpu
     assert args[args.index('--pwd') + 1] == str(work)
     assert '/opt/pose_guidance/experiment.py' in args
-    assert any(v.startswith('MPLCONFIGDIR=') for v in args)
-    assert (work / '.cache/matplotlib').is_dir()
+    exported = {value.partition('=')[0]: value.partition('=')[2]
+                for index, value in enumerate(args) if index and args[index - 1] == '--env'}
+    expected = {
+        'HOME': work / '.home',
+        'XDG_CACHE_HOME': work / '.cache',
+        'XDG_CONFIG_HOME': work / '.config',
+        'XDG_DATA_HOME': work / '.local/share',
+        'TORCH_HOME': work / '.cache/torch',
+        'TORCHINDUCTOR_CACHE_DIR': work / '.cache/torchinductor',
+        'TRITON_CACHE_DIR': work / '.cache/triton',
+        'CUDA_CACHE_PATH': work / '.cache/nvidia',
+        'HF_HOME': work / '.cache/huggingface',
+        'MPLCONFIGDIR': work / '.cache/matplotlib',
+    }
+    for name, value in expected.items():
+        assert exported.get(name) == str(value), name
+        assert value.is_dir(), name
+    assert Path(exported['XDG_RUNTIME_DIR']).parent.parent == work / '.tmp'
+    assert exported['TMPDIR'].startswith(str(work / '.tmp'))
+    assert 'HOME=/home/users' not in args
     assert not list((work / '.tmp').iterdir())
 
 
@@ -817,6 +835,42 @@ def test_milton_gpuq_explicitly_requests_one_a30():
     assert "#SBATCH --gres=gpu:A30:1" in script
     assert "#SBATCH --time=12:00:00" in script
     assert "#SBATCH --gres=gpu:1\n" not in script
+
+
+def test_gpu_runtime_writable_cache_probe_uses_scratch_not_login_home(tmp_path, monkeypatch):
+    names = {
+        'HOME': '.home',
+        'XDG_CACHE_HOME': '.cache',
+        'XDG_CONFIG_HOME': '.config',
+        'XDG_DATA_HOME': '.local/share',
+        'XDG_RUNTIME_DIR': '.tmp/xdg-runtime',
+        'TMPDIR': '.tmp',
+        'TORCH_HOME': '.cache/torch',
+        'TORCHINDUCTOR_CACHE_DIR': '.cache/torchinductor',
+        'TRITON_CACHE_DIR': '.cache/triton',
+        'CUDA_CACHE_PATH': '.cache/nvidia',
+        'HF_HOME': '.cache/huggingface',
+        'MPLCONFIGDIR': '.cache/matplotlib',
+    }
+    for name, relative in names.items():
+        monkeypatch.setenv(name, str(tmp_path / relative))
+    checked = experiment.verify_writable_runtime()
+    assert set(checked) == set(names)
+    assert checked['HOME'] == str(tmp_path / '.home')
+    assert all(Path(directory).is_dir() for directory in checked.values())
+    assert not list(tmp_path.rglob('.pose-runtime-write-*'))
+
+
+def test_gpu_runtime_probe_detects_missing_writable_cache(tmp_path, monkeypatch):
+    for name in (
+        'HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+        'XDG_RUNTIME_DIR', 'TMPDIR', 'TORCH_HOME', 'TORCHINDUCTOR_CACHE_DIR',
+        'TRITON_CACHE_DIR', 'HF_HOME', 'MPLCONFIGDIR',
+    ):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    monkeypatch.delenv('CUDA_CACHE_PATH', raising=False)
+    with pytest.raises(ValueError, match='CUDA_CACHE_PATH'):
+        experiment.verify_writable_runtime()
 
 
 @pytest.mark.parametrize("job, expected_angles", [

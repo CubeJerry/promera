@@ -16,7 +16,9 @@ import platform
 import runpy
 import shutil
 import sys
+import tempfile
 import time
+import traceback
 from typing import Any
 
 import numpy as np
@@ -211,6 +213,47 @@ def job_config(root: Path, index: int) -> tuple[dict[str, Any], Any, Path]:
     return manifest, OmegaConf.load(path), path
 
 
+def verify_writable_runtime() -> dict[str, str]:
+    """Fail early if the isolated GPU image would write into read-only /home.
+
+    Do not modify host HOME. Every checked path must already be redirected
+    by the experimental container wrapper to the scratch bind mount.
+    """
+    keys = (
+        'HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+        'XDG_RUNTIME_DIR', 'TMPDIR', 'TORCH_HOME',
+        'TORCHINDUCTOR_CACHE_DIR', 'TRITON_CACHE_DIR', 'CUDA_CACHE_PATH',
+        'HF_HOME', 'MPLCONFIGDIR',
+    )
+    checked: dict[str, str] = {}
+    for name in keys:
+        value = os.environ.get(name, '').strip()
+        if not value or not Path(value).is_absolute():
+            raise ValueError(
+                f'GPU runtime requires an absolute writable {name}, got {value!r}; '
+                'launch using the updated pose_guidance/container.sh'
+            )
+        target = Path(value)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode='wb', dir=target, prefix='.pose-runtime-write-'
+            ) as handle:
+                handle.write(b'ok')
+        except OSError as exc:
+            raise OSError(
+                f'{name}={target} is not writable inside Apptainer; '
+                'do not allow GPU compilers or caches to fall back to /home/users'
+            ) from exc
+        checked[name] = str(target)
+    # Some libraries call pathlib.Path.home() rather than reading HOME.
+    if Path.home() != Path(checked['HOME']):
+        raise ValueError(
+            f'Path.home()={Path.home()} differs from configured HOME={checked["HOME"]}'
+        )
+    return checked
+
+
 def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, Any]:
     _, cfg, _ = job_config(root, index)
     import torch
@@ -226,6 +269,7 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
         raise ValueError('this image lacks the current NOMINEE multichain-antigen patch; repair the Promera image through dev')
     if require_gpu and not torch.cuda.is_available():
         raise ValueError('no CUDA GPU visible; run the GPU stage inside a SLURM GPU allocation')
+    runtime_writable_dirs = verify_writable_runtime() if require_gpu else None
     task = PoseGuidedDesign(cfg)
     if not len(task):
         raise ValueError('no generation items; fresh runs must not inherit completed outputs')
@@ -249,7 +293,8 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               ),
               'inverse_folder': cfg.inverse_folder.type,
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
-              'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT')}
+              'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT'),
+              'runtime_writable_dirs': runtime_writable_dirs}
     report['pose_anchor_diagnostics'] = [
         {
             'backbone_index': int(feat['backbone_idx']),
@@ -461,6 +506,10 @@ def main() -> None:
         else:
             analyse(Path(args.experiment).resolve())
     except (ValueError, OSError, KeyError) as error:
+        # A full traceback is essential for GPU-only filesystem/library errors:
+        # do not collapse the responsible call site into just "[Errno 30]".
+        if isinstance(error, OSError):
+            traceback.print_exc()
         parser.exit(2, f'ERROR: {error}\n')
 
 

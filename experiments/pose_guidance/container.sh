@@ -38,8 +38,19 @@ ASSETS=$(readlink -f -- "$PROMERA_ASSETS")
 }
 printf 'Promera image: %s\nPromera assets: %s\n' "$IMAGE" "$ASSETS" >&2
 [[ ! -d "$WORK/promera" ]] || { echo 'ERROR: POSE_WORK must not be a Promera source checkout' >&2; exit 2; }
-mkdir -p "$WORK/.cache/torch" "$WORK/.cache/triton" "$WORK/.cache/matplotlib" "$WORK/.tmp"
+# An isolated --no-home container must never inherit a non-mounted /home/users
+# from the SIF or NSS passwd entry. Provide a real writable home under scratch
+# as well as explicit destinations for libraries that ignore HOME.
+mkdir -p \
+    "$WORK/.home" "$WORK/.config" "$WORK/.local/share" "$WORK/.tmp" \
+    "$WORK/.cache/torch" "$WORK/.cache/torchinductor" \
+    "$WORK/.cache/triton" "$WORK/.cache/nvidia" \
+    "$WORK/.cache/huggingface/hub" "$WORK/.cache/huggingface/transformers" "$WORK/.cache/matplotlib" \
+    "$WORK/.cache/numba" "$WORK/.cache/cupy"
+chmod 700 "$WORK/.home" "$WORK/.config" "$WORK/.local/share"
 TEMP=$(mktemp -d "$WORK/.tmp/pose-guide.XXXXXX")
+mkdir -p "$TEMP/xdg-runtime"
+chmod 700 "$TEMP/xdg-runtime"
 trap 'rm -rf -- "$TEMP"' EXIT
 
 # Latest NOMINEE keeps prepared run schemas and MSA caches under the managed
@@ -76,7 +87,22 @@ args+=(--env "TINYPROT_CACHE=/opt/nominee/assets/tinyprot")
 args+=(--env "NOMINEE_ASSET_ROOT=/opt/nominee/assets")
 args+=(--env "ABMPNN_CHECKPOINT=/opt/nominee/assets/checkpoints/abmpnn.pt")
 args+=(--env "LIGANDMPNN_DIR=/opt/nominee/component/LigandMPNN")
-args+=(--env "TMPDIR=$TEMP" --env "TORCHINDUCTOR_CACHE_DIR=$WORK/.cache/torch")
-args+=(--env "TRITON_CACHE_DIR=$WORK/.cache/triton" --env "MPLCONFIGDIR=$WORK/.cache/matplotlib" --env 'PROMERA_RECORD_TRAJECTORY=0')
-args+=(--env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
+# --cleanenv and --no-home do not guarantee that the container's HOME
+# environment matches a writable path. Redirect all common runtime caches,
+# especially GPU compiler caches, to the bound experiment scratch workspace.
+args+=(--env "HOME=$WORK/.home" --env "XDG_CONFIG_HOME=$WORK/.config")
+args+=(--env "XDG_CACHE_HOME=$WORK/.cache" --env "XDG_DATA_HOME=$WORK/.local/share")
+args+=(--env "XDG_RUNTIME_DIR=$TEMP/xdg-runtime" --env "TMPDIR=$TEMP")
+args+=(--env "TORCH_HOME=$WORK/.cache/torch")
+args+=(--env "TORCHINDUCTOR_CACHE_DIR=$WORK/.cache/torchinductor")
+args+=(--env "TRITON_CACHE_DIR=$WORK/.cache/triton")
+args+=(--env "CUDA_CACHE_PATH=$WORK/.cache/nvidia")
+args+=(--env "HF_HOME=$WORK/.cache/huggingface")
+args+=(--env "HUGGINGFACE_HUB_CACHE=$WORK/.cache/huggingface/hub")
+args+=(--env "HF_HUB_CACHE=$WORK/.cache/huggingface/hub")
+args+=(--env "TRANSFORMERS_CACHE=$WORK/.cache/huggingface/transformers")
+args+=(--env "MPLCONFIGDIR=$WORK/.cache/matplotlib" --env "MPLBACKEND=Agg")
+args+=(--env "NUMBA_CACHE_DIR=$WORK/.cache/numba")
+args+=(--env "CUPY_CACHE_DIR=$WORK/.cache/cupy")
+args+=(--env 'PROMERA_RECORD_TRAJECTORY=0' --env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
 apptainer "${args[@]}" "$IMAGE" python /opt/pose_guidance/experiment.py "$@"

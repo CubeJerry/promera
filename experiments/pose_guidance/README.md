@@ -65,6 +65,45 @@ reference approach axis, not from the antigen's local surface normal.
 This is soft generation conditioning; the measured angle in the free
 backbone/refold is separately recorded and can differ.
 
+## GPU filesystem error after SLURM launch (2026-11-18)
+
+A later A30 launch reached the two input-featurization records and then stopped
+with `[Errno 30] Read-only file system: '/home/users'`. This is a **container
+runtime write-path** failure, not a failed angle-range guide, lost MSA cache,
+or reason to rebuild NOMINEE. The experimental wrapper previously used
+`--cleanenv --no-home` without setting a writable `HOME` and several GPU
+cache destinations. A dependency that falls back to the user's container
+home consequently attempts to create `/home/users`, which is read-only.
+
+The wrapper now creates a private writable `$POSE_WORK/.home` alongside
+scratch-backed `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_RUNTIME_DIR`, `TORCH_HOME`, `TORCHINDUCTOR_CACHE_DIR`,
+`TRITON_CACHE_DIR`, `CUDA_CACHE_PATH`, `HF_HOME`, Hugging Face hub,
+Numba and CuPy caches, `MPLCONFIGDIR`, and `TMPDIR`. It binds only
+`$POSE_WORK` writable; the original NOMINEE assets and source run stay
+read-only. A GPU-only preflight checks and briefly writes a temporary marker
+in every required runtime directory, then removes the marker. Unexpected
+`OSError` failures now include a Python traceback identifying the source.
+
+For a **fresh fingerprinted experiment**, run:
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance pull --ff-only
+module load apptainer
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --angle-range 15:35
+```
+
+Do not reuse a failed prepared experiment after updating the code because its
+manifest pins old script hashes. The launcher creates a timestamped directory
+and verifies the source pose again before submitting. The previous job logs
+remain available for audit. Even with successful preflight, a GPU-only library
+may expose an additional missing writable path; its traceback should be used
+to diagnose that specific call site rather than disabling validation.
+
 ## Correct SLURM source path (job 31086054)
 
 The original B004/G047/5_389 smoke job `31086054` was accepted by SLURM
