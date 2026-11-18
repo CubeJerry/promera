@@ -27,8 +27,8 @@ from omegaconf import OmegaConf
 
 from pose_geometry import (align, build_plan, digest, observed_arrays,
                            pose_metrics, read_chains, rmsd,
-                           targeted_site_from_reference, site_contact_metrics,
-                           cone_placement, jitter, cross_distogram)
+                           targeted_site_from_reference, native_epitope_template_ids,
+                           site_contact_metrics, cone_placement, jitter, cross_distogram)
 
 HERE = Path(__file__).resolve().parent
 ARMS = [('control', 0, 0, 0), ('anchors4', 4, 0, 0), ('anchors8', 8, 0, 0),
@@ -153,6 +153,22 @@ def prepare(args: argparse.Namespace) -> None:
         template = resolve(target_template['path'], base_path.parent)
         if not template.is_file():
             raise ValueError(f'target template not found: {template}')
+    if args.profile == 'comparison':
+        site = plan['targeted_site']
+        if target_template:
+            native_chain = str(target_template.get('chain') or site['chain'])
+            native_chains = read_chains(template)
+            if native_chain not in native_chains:
+                raise ValueError(f'target template is missing chain {native_chain!r}')
+            site['native_epitope_residue_ids'] = native_epitope_template_ids(
+                site, schema[site['chain']]['sequence'], native_chains[native_chain]
+            )
+            site['native_epitope_numbering'] = 'target_template_author_ids'
+            site['native_template_chain'] = native_chain
+        else:
+            site['native_epitope_residue_ids'] = list(site['schema_positions_1_based'])
+            site['native_epitope_numbering'] = 'schema_1_based'
+            site['native_template_chain'] = None
     root.mkdir(parents=True)
     inputs = root / 'inputs'
     inputs.mkdir()
@@ -178,12 +194,15 @@ def prepare(args: argparse.Namespace) -> None:
             job_cfg['output'] = str(root / 'results' / label / f'rep{rep}')
             site_enabled = args.profile == 'comparison' and label != 'control'
             if args.profile == 'comparison':
-                # Targeted flags are added as explicit schema-ordinal model
-                # features by PoseGuidedDesign, after the native target-template
-                # featurization. Do not put schema ordinals in epitope_residues:
-                # with a full-length antigen template that field ambiguously
-                # switches to template-author residue numbering.
-                job_cfg['epitope_residues'] = []
+                # Use Promera's *native* targeted epitope configuration, not
+                # an extra feature injection after featurization. Mapping
+                # schema positions to full-template author IDs means the
+                # native task both sets antigen epitope tokens and pins them
+                # correctly during target-template subsampling.
+                job_cfg['epitope_residues'] = (
+                    list(plan['targeted_site']['native_epitope_residue_ids'])
+                    if site_enabled else []
+                )
                 if site_enabled:
                     job_cfg['epitope_chain'] = plan['targeted_site']['chain']
                 job_cfg.setdefault('nominee', {})['has_epitope'] = site_enabled

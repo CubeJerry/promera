@@ -258,7 +258,20 @@ def task_module(monkeypatch):
         def __init__(self, cfg):
             self.cfg = cfg
         def __getitem__(self, idx):
-            return copy.deepcopy(self.features[idx])
+            feat = copy.deepcopy(self.features[idx])
+            ids = list(self.cfg.get('epitope_residues', []) or [])
+            if ids:
+                chain = self.cfg.epitope_chain
+                assert not self.cfg.get('target_template'), (
+                    'the synthetic feature fixture only supports native schema numbering'
+                )
+                offsets, offset = {}, 0
+                for name, record in feat['struct'].chains.items():
+                    offsets[name], offset = offset, offset + len(record.rname)
+                for residue in ids:
+                    feat['is_epitope'][offsets[chain] + int(residue) - 1] = True
+                feat['struct'].epitope_residues = [int(x) for x in ids]
+            return feat
         def _refold_batch(self, model, feats):
             return model.pairformer_forward(feats)
 
@@ -636,6 +649,13 @@ def test_target_site_selects_antigen_schema_ordinals_not_template_ids():
     assert site['schema_positions_1_based'] == [1, 2, 3, 4, 5]
     assert site['residue_numbering'].startswith('1-based in exact target schema')
     assert all(0 < value <= 25 for value in site['nearest_cdr_ca_distance_angstrom'].values())
+    template = {
+        'sequence': 'QQACDEFRR',
+        'residue_ids': [str(i) for i in range(101, 110)],
+    }
+    assert g.native_epitope_template_ids(site, 'ACDEF', template) == [
+        '103', '104', '105', '106', '107'
+    ]
     with pytest.raises(ValueError, match='cutoff'):
         g.targeted_site_from_reference(chains, plan, 30.0)
     with pytest.raises(ValueError, match='CDR-proximal site'):
@@ -658,7 +678,10 @@ def test_comparison_creates_paired_site_only_and_guided_arms(prepared):
     for job in manifest['jobs']:
         _, cfg, _ = experiment.job_config(root, job['index'])
         by_arm.setdefault(job['arm'], {})[job['replicate']] = cfg
-        assert cfg.epitope_residues == []
+        if job['arm'] == 'control':
+            assert list(cfg.epitope_residues) == []
+        else:
+            assert list(cfg.epitope_residues) == [1, 2, 3, 4, 5]
         assert cfg.pose_guidance.seed == 100 + job['replicate']
         assert cfg.binder.framework_template is None
     for rep in (0, 1):

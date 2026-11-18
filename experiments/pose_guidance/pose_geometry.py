@@ -443,6 +443,27 @@ def targeted_site_from_reference(
     }
 
 
+def native_epitope_template_ids(
+    site: dict[str, Any], target_sequence: str, template_chain: dict[str, Any]
+) -> list[str]:
+    """Map schema-ordinal site residues to native target-template author IDs.
+
+    Promera's ordinary targeted design accepts template residue IDs when a
+    template is present, then resolves them back onto target schema positions
+    before selecting is_epitope tokens *and* pinning target-template landmarks.
+    Do not feed schema ordinals directly when template and crop numbering differ.
+    Require exact, unambiguous sequence matching for this comparison.
+    """
+    mapping = exact_crop(target_sequence, template_chain['sequence'])
+    ids = template_chain['residue_ids']
+    if len(ids) != len(template_chain['sequence']):
+        raise ValueError('template residue IDs and sequence have incompatible lengths')
+    selected = [str(ids[mapping[p - 1]]) for p in site['schema_positions_1_based']]
+    if len(set(selected)) != len(selected) or any(not x.strip() for x in selected):
+        raise ValueError('target template has missing or duplicated site author IDs')
+    return selected
+
+
 def site_contact_metrics(chains: dict[str, Any], plan: dict[str, Any]) -> dict[str, float | int | None]:
     """Observed CDR/antigen contacts to the *shared* source-defined site.
 

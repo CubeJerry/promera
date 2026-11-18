@@ -16,12 +16,15 @@ B004/G047/5_389 reference: target chain **A**, schema residues with C-alpha
 within **10 A** of a reference CDR C-alpha (33 residues in the supplied
 reference backbone). This is a source-guided **site** definition, not a
 framework template. The same antigen epitope feature mask applies to all
-site-aware conditions. Because the NOMINEE antigen template has different
-author residue numbering from the 424-residue cropped target, the experiment
-applies the exact schema-ordinal epitope token mask after native
-featurization rather than ambiguously passing source ordinals into
-`epitope_residues`. It also sets the correct epitope chain and sample contact
-metadata. No source files or production code are modified.
+site-aware conditions. The experiment uses **Promera's native targeted
+run pathway**. Because the NOMINEE antigen template has different author
+residue numbering from the 424-residue cropped target, preparation maps the
+site from schema ordinals to full-template author residue IDs, and supplies
+them as `epitope_residues` to each site-aware arm. Promera then marks
+antigen epitope tokens and **pins those residues during target-template
+subsampling**, just like an ordinary targeted run. The experimental task
+verifies the native features instead of silently injecting another mask.
+No source files or production code are modified.
 
 | Arm | Antigen site target? | Target–binder distance pairs | Purpose |
 | --- | --- | ---: | --- |

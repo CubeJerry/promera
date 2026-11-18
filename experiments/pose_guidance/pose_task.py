@@ -83,20 +83,26 @@ class PoseGuidedDesign(Design):
         site = self.plan.get('targeted_site')
         site_enabled = bool(self.guide.get('targeted_site_enabled', False))
         if site_enabled:
-            if site is None or self.cfg.get('epitope_residues'):
-                raise ValueError('targeted comparison needs one generated site and no ambiguous legacy epitope residues')
+            if site is None:
+                raise ValueError('targeted comparison needs a recorded source site')
             chain = site['chain']
             positions = site['schema_positions_1_based']
             if chain not in offsets or chain != self.cfg.epitope_chain:
                 raise ValueError('target site chain must match the selected antigen chain')
             if any(not 1 <= p <= len(struct.chains[chain].rname) for p in positions):
                 raise ValueError('selected site residue outside generated antigen')
+            if list(self.cfg.epitope_residues) != list(site['native_epitope_residue_ids']):
+                raise ValueError('native targeted residue IDs changed after preparation')
             site_tokens = [offsets[chain] + p - 1 for p in positions]
-            # The native design task has already applied its ordinary CDR
-            # paratope flags. Add site-only antigen epitope flags using schema
-            # ordinals; leave framework/template coordinates untouched.
-            feats['is_epitope'][site_tokens] = 1
-            struct.epitope_residues = list(positions)
+            # Native Promera target featurization must already have applied
+            # epitope tokens, pinned the target template, and converted author
+            # IDs back to 1-based schema positions. Do NOT add a second mask:
+            # that would differ from the ordinary targeted-run pathway.
+            actual = {i for i in site_tokens if bool(feats['is_epitope'][i])}
+            if actual != set(site_tokens):
+                raise ValueError('native targeted epitope features do not match the source site')
+            if list(getattr(struct, 'epitope_residues', [])) != list(positions):
+                raise ValueError('native mapped target epitope residue ordinals disagree')
         elif site is not None:
             site_tokens = []
             if any(bool(feats['is_epitope'][offsets[chain] + p - 1])
