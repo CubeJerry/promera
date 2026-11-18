@@ -22,10 +22,14 @@ nanobody framework template. This size matches the maximum default Epitope
 Scan signature of seven residues; ordinary targeted runs can also accept
 different user-specified site sizes. The same antigen epitope feature mask applies to all
 site-aware conditions. The experiment uses **Promera's native targeted
-run pathway**. Because the NOMINEE antigen template has different author
-residue numbering from the 424-residue cropped target, preparation maps the
-site from schema ordinals to full-template author residue IDs, and supplies
-them as `epitope_residues` to each site-aware arm. Promera then marks
+run pathway**. Because the NOMINEE antigen template has different residue
+numbering from the 424-residue cropped target, preparation maps selected
+site positions onto template residue IDs using Promera's validated
+semi-global schema-to-template alignment (not a strict exact substring).
+Both alignment identity and coverage must pass the source task's configured
+thresholds, and each selected site residue must match its mapped template
+amino acid exactly. Any unresolved selected residue fails before submission.
+These IDs are supplied as `epitope_residues` to each site-aware arm. Promera then marks
 antigen epitope tokens and **pins those residues during target-template
 subsampling**, just like an ordinary targeted run. The experimental task
 verifies the native features instead of silently injecting another mask.
@@ -95,6 +99,34 @@ secondary diagnostics: good backbone steering does not imply
 thermodynamically stable, binding or neutralising nanobodies.
 This is a single-pose computational comparison, not proof of performance
 across epitopes or pathogens.
+
+### Earlier strict-crop preparation failure
+
+A `--site-residues 5` comparison previously stopped at
+`target chain must match the guide exactly or be a unique contiguous crop`.
+That check arose from the experimental template-ID translator, not from
+Promera's backbone sampler. The new translator uses Promera's existing
+semi-global template aligner, with the native `target_template.min_identity`
+and `min_coverage` thresholds. It verifies identity at all five selected
+epitope sites, records the alignment metrics and residue-ID mapping in the
+experiment `plan.json`, and leaves the original source run unchanged.
+The pilot has not been GPU-retested with this correction.
+
+To retry the user's five-residue, 0–20-degree comparison, run:
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance pull --ff-only
+module load apptainer
+python3 promera-pose-guidance/experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --profile comparison \
+  --angle-range 0:20 \
+  --site-residues 5 \
+  --backbones 32 \
+  --replicates 3
+```
 
 ## One-command Pose Atlas smoke (B004 / G047 / 5_389)
 

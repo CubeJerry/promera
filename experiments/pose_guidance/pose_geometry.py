@@ -462,24 +462,102 @@ def targeted_site_from_reference(
 
 
 def native_epitope_template_ids(
-    site: dict[str, Any], target_sequence: str, template_chain: dict[str, Any]
+    site: dict[str, Any], target_sequence: str, template_chain: dict[str, Any],
+    *, min_identity: float = 0.8, min_coverage: float = 0.7,
+    aligner: Any | None = None, alignment_report: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Map schema-ordinal site residues to native target-template author IDs.
+    """Map source-site runtime ordinals to native template residue IDs safely.
 
-    Promera's ordinary targeted design accepts template residue IDs when a
-    template is present, then resolves them back onto target schema positions
-    before selecting is_epitope tokens *and* pinning target-template landmarks.
-    Do not feed schema ordinals directly when template and crop numbering differ.
-    Require exact, unambiguous sequence matching for this comparison.
+    The runtime target is a cropped antigen and the template can contain
+    additional residues, gaps, substitutions or unresolved structure entries.
+    Use Promera's own semi-global schema-to-template alignment, not
+    exact_crop, which rejects legitimate template representations.
+
+    Require the native model's configured identity/coverage floors, a
+    one-to-one mapping, and exact amino-acid identity at all selected
+    epitope positions. Those conditions prevent a high overall score from
+    silently mapping a targeted residue to a different amino acid or gap.
+    The downstream PoseGuidedDesign task independently checks the native
+    Promera-derived struct.epitope_residues during CPU preflight.
     """
-    mapping = exact_crop(target_sequence, template_chain['sequence'])
-    ids = template_chain['residue_ids']
-    if len(ids) != len(template_chain['sequence']):
+    template_sequence = str(template_chain['sequence'])
+    ids = list(template_chain['residue_ids'])
+    if not target_sequence or not template_sequence:
+        raise ValueError('empty runtime or target template sequence')
+    if len(ids) != len(template_sequence):
         raise ValueError('template residue IDs and sequence have incompatible lengths')
-    selected = [str(ids[mapping[p - 1]]) for p in site['schema_positions_1_based']]
-    if len(set(selected)) != len(selected) or any(not x.strip() for x in selected):
-        raise ValueError('target template has missing or duplicated site author IDs')
+    if not (
+        np.isfinite([min_identity, min_coverage]).all()
+        and 0 < min_identity <= 1 and 0 < min_coverage <= 1
+    ):
+        raise ValueError('invalid target-template identity or coverage thresholds')
+
+    if aligner is None:
+        # This helper is the same one used in promera.inference.design for
+        # ordinary targeted epitope mapping and template conditioning.
+        # Lazy import keeps CPU geometry tests independent of the model,
+        # TinyProt, and CUDA libraries until prepare() actually runs.
+        from promera.inference.utils import align_schema_to_template
+        aligner = align_schema_to_template
+
+    mapping, stats = aligner(target_sequence, template_sequence)
+    identity, coverage = float(stats['identity']), float(stats['coverage'])
+    if (
+        not np.isfinite([identity, coverage]).all()
+        or identity < min_identity or coverage < min_coverage
+    ):
+        raise ValueError(
+            'target-template alignment below configured safety thresholds: '
+            f'identity={identity:.3f} (minimum {min_identity:.3f}), '
+            f'coverage={coverage:.3f} (minimum {min_coverage:.3f})'
+        )
+    if len(set(mapping.values())) != len(mapping):
+        raise ValueError('target-template alignment is not one-to-one')
+    # Select only the user-requested compact site, never all candidate-pool
+    # residues within the broad CDR neighbourhood.
+    selected = []
+    for position in site['schema_positions_1_based']:
+        pos = int(position)
+        if not 1 <= pos <= len(target_sequence):
+            raise ValueError(f'target site position {pos} outside runtime sequence')
+        index = mapping.get(pos - 1)
+        if index is None:
+            raise ValueError(
+                f'target site position {pos} has no corresponding template residue; '
+                'cannot safely pin this epitope'
+            )
+        if not 0 <= index < len(template_sequence):
+            raise ValueError(f'template index {index} for site position {pos} is invalid')
+        if target_sequence[pos - 1] != template_sequence[index] or target_sequence[pos - 1] == 'X':
+            raise ValueError(
+                f'target site position {pos} maps to a non-identical or unresolved '
+                f'template residue ({target_sequence[pos - 1]} vs {template_sequence[index]}); '
+                'choose a source-supported target site'
+            )
+        residue_id = str(ids[index])
+        if not residue_id.strip() or residue_id in {'.', '?'}:
+            raise ValueError(f'target site position {pos} has no usable template residue ID')
+        selected.append(residue_id)
+
+    if len(set(selected)) != len(selected):
+        raise ValueError('target template has duplicated selected residue IDs')
+    if alignment_report is not None:
+        alignment_report.update({
+            'method': 'promera.inference.utils.align_schema_to_template',
+            'runtime_length': len(target_sequence),
+            'template_length': len(template_sequence),
+            'identity': identity,
+            'coverage': coverage,
+            'mapped': int(stats['mapped']),
+            'min_identity': float(min_identity),
+            'min_coverage': float(min_coverage),
+            'schema_to_template_residue_ids': {
+                str(int(pos)): str(resid)
+                for pos, resid in zip(site['schema_positions_1_based'], selected)
+            },
+        })
     return selected
+
 
 
 def site_contact_metrics(chains: dict[str, Any], plan: dict[str, Any]) -> dict[str, float | int | None]:

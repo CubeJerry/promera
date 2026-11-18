@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import csv
 import importlib.util
@@ -643,6 +644,79 @@ def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2):
     return Path(args.out)
 
 
+def real_promera_schema_template_aligner():
+    """Load just the real alignment function without TinyProt or SciPy imports.
+
+    This regression tests the source-code implementation Promera actually
+    invokes, rather than approximating its semi-global mapping with a fake.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] /
+        'promera/inference/utils.py'
+    )
+    module = ast.parse(source.read_text())
+    matches = [
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == 'align_schema_to_template'
+    ]
+    assert len(matches) == 1
+    namespace = {'np': np}
+    exec(compile(ast.Module(body=matches, type_ignores=[]), str(source), 'exec'), namespace)
+    return namespace['align_schema_to_template']
+
+
+def test_native_template_mapping_allows_internal_gaps_and_nonidentical_crop():
+    align = real_promera_schema_template_aligner()
+    runtime = 'ARNDCQEGHILKMFPSTWYV'
+    # The runtime is not an exact substring: template has an inserted
+    # stretch and a few residues before/after the covered antigen domain.
+    insert = 10
+    template = 'GG' + runtime[:insert] + 'QQQ' + runtime[insert:] + 'TT'
+    ids = [str(101 + i) for i in range(len(template))]
+    site = {'schema_positions_1_based': [2, 5, 11, 17, 20]}
+    report = {}
+    result = g.native_epitope_template_ids(
+        site, runtime, {'sequence': template, 'residue_ids': ids},
+        min_identity=0.8, min_coverage=0.7, aligner=align,
+        alignment_report=report,
+    )
+    assert result == ['104', '107', '116', '122', '125']
+    assert report['identity'] == pytest.approx(1)
+    assert report['coverage'] == pytest.approx(1)
+    assert report['mapped'] == len(runtime)
+    assert report['schema_to_template_residue_ids'] == dict(
+        zip(('2','5','11','17','20'), result)
+    )
+    assert runtime not in template
+
+
+def test_native_template_mapping_rejects_unmapped_or_changed_selected_site():
+    align = real_promera_schema_template_aligner()
+    runtime = 'ARNDCQEGHILKMFPSTWYV'
+    template = 'GG' + runtime[:10] + 'QQQ' + runtime[10:] + 'TT'
+    ids = [str(i) for i in range(1, len(template) + 1)]
+    # Missing the entire region covering a selected source-target residue
+    # must be rejected even if the remaining alignment passes overall gates.
+    unmapped = {'schema_positions_1_based': [2, 5, 11, 17, 20]}
+    template_without_middle = 'GG' + runtime[:10] + runtime[12:] + 'TT'
+    with pytest.raises(ValueError, match='no corresponding template residue'):
+        g.native_epitope_template_ids(
+            unmapped, runtime,
+            {'sequence': template_without_middle,
+             'residue_ids': ids[:len(template_without_middle)]},
+            aligner=align,
+        )
+    # A mutation exactly at one of the selected antigen sites is not
+    # silently accepted merely because whole-chain identity stays high.
+    changed = template[:15] + 'A' + template[16:]
+    with pytest.raises(ValueError, match='non-identical or unresolved'):
+        g.native_epitope_template_ids(
+            unmapped, runtime,
+            {'sequence': changed, 'residue_ids': ids}, aligner=align,
+        )
+
+
 def test_target_site_selects_antigen_schema_ordinals_not_template_ids():
     chains, _, plan = fixtures()
     site = g.targeted_site_from_reference(chains, plan, 25.0)
@@ -654,13 +728,75 @@ def test_target_site_selects_antigen_schema_ordinals_not_template_ids():
         'sequence': 'QQACDEFRR',
         'residue_ids': [str(i) for i in range(101, 110)],
     }
-    assert g.native_epitope_template_ids(site, 'ACDEF', template) == [
-        '103', '104', '105', '106', '107'
-    ]
+    assert g.native_epitope_template_ids(
+        site, 'ACDEF', template,
+        aligner=real_promera_schema_template_aligner()
+    ) == ['103', '104', '105', '106', '107']
     with pytest.raises(ValueError, match='cutoff'):
         g.targeted_site_from_reference(chains, plan, 30.0)
     with pytest.raises(ValueError, match='CDR-proximal site'):
         g.targeted_site_from_reference(chains, plan, 5.0)
+
+
+def test_comparison_prepare_uses_native_semiglobal_template_alignment(
+    prepared, monkeypatch, task_module
+):
+    """Prevent the observed exact_crop rejection on a realistic template indel."""
+    from types import ModuleType
+    chains, _, _ = fixtures()
+    folder = prepared.parent
+    cfg_path = folder / 'base.yaml'
+    cfg = json.loads(cfg_path.read_text())
+    template_file = folder / 'native_template.cif'
+    template_file.write_text('synthetic template mmCIF placeholder')
+    cfg['target_template'] = {
+        'path': str(template_file), 'chain': 'K', 'min_identity': 0.8,
+        'min_coverage': 0.7, 'subsample_frac': 0.8,
+        'on_alignment_failure': 'error',
+    }
+    cfg_path.write_text(json.dumps(cfg))
+    template_chains = {
+        'K': {
+            'sequence': 'QQACDQEFRR',
+            'residue_ids': [str(i) for i in range(101, 111)],
+        }
+    }
+    monkeypatch.setattr(
+        experiment, 'read_chains',
+        lambda path: template_chains if Path(path).name == template_file.name else chains,
+    )
+    helper = ModuleType('promera.inference.utils')
+    helper.align_schema_to_template = real_promera_schema_template_aligner()
+    monkeypatch.setitem(sys.modules, 'promera.inference.utils', helper)
+
+    args = argparse.Namespace(
+        base_config=str(cfg_path), pose=str(folder / 'guide.cif'),
+        guide_binder_chain='N', target_map='{"K":"L"}',
+        msa_dir=None, out=str(folder / 'native-template-compare'),
+        backbones=3, replicates=1, batch_size=1,
+        profile='comparison', seed=100,
+        inverse_folder='boltzif', sequences_per_backbone=1,
+        angle_range='0:20', angle_translation_angstrom=0,
+        site_cutoff_angstrom=25.0, site_residues=5,
+    )
+    experiment.prepare(args)
+    plan = experiment.load_json(Path(args.out) / 'plan.json')
+    site = plan['targeted_site']
+    assert site['schema_positions_1_based'] == [1, 2, 3, 4, 5]
+    assert site['native_epitope_residue_ids'] == [
+        '103', '104', '105', '107', '108'
+    ]
+    assert site['template_alignment']['method'] == (
+        'promera.inference.utils.align_schema_to_template'
+    )
+    assert site['template_alignment']['identity'] == pytest.approx(1.0)
+    assert site['template_alignment']['coverage'] == pytest.approx(1.0)
+    assert site['template_alignment']['schema_to_template_residue_ids']['4'] == '107'
+    for index, arm in enumerate(('control','targeted','anchors16','cone16')):
+        _, prepared_cfg, _ = experiment.job_config(Path(args.out), index)
+        assert list(prepared_cfg.epitope_residues) == (
+            [] if arm == 'control' else site['native_epitope_residue_ids']
+        )
 
 
 def test_site_cap_selects_seven_closest_from_broad_cdr_neighbourhood():

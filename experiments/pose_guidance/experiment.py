@@ -162,10 +162,15 @@ def prepare(args: argparse.Namespace) -> None:
             native_chains = read_chains(template)
             if native_chain not in native_chains:
                 raise ValueError(f'target template is missing chain {native_chain!r}')
+            alignment_report: dict[str, Any] = {}
             site['native_epitope_residue_ids'] = native_epitope_template_ids(
-                site, schema[site['chain']]['sequence'], native_chains[native_chain]
+                site, schema[site['chain']]['sequence'], native_chains[native_chain],
+                min_identity=float(target_template.get('min_identity', 0.8)),
+                min_coverage=float(target_template.get('min_coverage', 0.7)),
+                alignment_report=alignment_report,
             )
-            site['native_epitope_numbering'] = 'target_template_author_ids'
+            site['template_alignment'] = alignment_report
+            site['native_epitope_numbering'] = 'target_template_residue_ids'
             site['native_template_chain'] = native_chain
         else:
             site['native_epitope_residue_ids'] = list(site['schema_positions_1_based'])
