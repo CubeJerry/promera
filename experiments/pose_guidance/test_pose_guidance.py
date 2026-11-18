@@ -751,6 +751,49 @@ def test_atlas_launcher_external_bind_is_read_only(tmp_path):
     assert len(external.split(",")) >= 1
 
 
+def test_atlas_launcher_submits_using_repository_root_not_experiments(
+    tmp_path, monkeypatch
+):
+    """Prevent actual SLURM exit 127 caused by duplicated /experiments path."""
+    import launch_from_atlas as atlas
+
+    run, *_ = _synthetic_atlas_run(tmp_path)
+    site = tmp_path / "dev" / "config.yaml"
+    site.parent.mkdir(parents=True)
+    site.write_text(f"paths:\n  installation_parent: {tmp_path / 'installation'}\n")
+    args = argparse.Namespace(
+        run=str(run), pose_id="B004__G047__5_389", angle_range="15:35",
+        nominee_config=str(site), work=str(tmp_path / "test-work"),
+        dry_run=False, no_submit=False,
+    )
+    invocations = []
+    def simulate_run(argv, **kwargs):
+        invocations.append((list(argv), dict(kwargs)))
+        env = kwargs["env"]
+        source = Path(env["POSE_SOURCE"])
+        assert source == Path(atlas.__file__).resolve().parents[2]
+        assert (source / "promera").is_dir()
+        assert (source / "experiments/pose_guidance/container.sh").is_file()
+        assert "experiments/experiments/" not in str(source)
+        if argv[0] == "bash" and "prepare" in argv:
+            out = Path(argv[argv.index("--out") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+        return types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr(atlas.subprocess, "run", simulate_run)
+    monkeypatch.setattr(atlas, "shutil_which_sbatch", lambda: True)
+    atlas.launch(args)
+    assert len(invocations) == 5
+    assert [cmd[0][2] for cmd in invocations[:4]] == [
+        "prepare", "preflight", "preflight", "preflight"
+    ]
+    sbatch, kw = invocations[-1]
+    assert sbatch[0] == "sbatch"
+    assert "--array=0-2%1" in sbatch
+    assert Path(sbatch[-1]) == Path(atlas.__file__).resolve().with_name("run.slurm")
+    assert kw["env"]["POSE_SOURCE"] == str(Path(atlas.__file__).resolve().parents[2])
+    assert (Path(kw["env"]["POSE_EXPERIMENT"]) / "source_atlas_selection.json").is_file()
+
+
 def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
     import launch_from_atlas as atlas
     run, *_ = _synthetic_atlas_run(tmp_path)

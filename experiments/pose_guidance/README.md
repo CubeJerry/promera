@@ -65,6 +65,33 @@ reference approach axis, not from the antigen's local surface normal.
 This is soft generation conditioning; the measured angle in the free
 backbone/refold is separately recorded and can differ.
 
+## Correct SLURM source path (job 31086054)
+
+The original B004/G047/5_389 smoke job `31086054` was accepted by SLURM
+but **all three tasks exited 127 immediately**: the old launcher set
+`POSE_SOURCE` to `<repo>/experiments` instead of `<repo>`, causing
+a doubled `experiments/experiments/pose_guidance/container.sh` path.
+The GPU model was never started; no outputs were produced.
+
+The launcher now verifies its checkout root before preparation and explicitly
+exports the repository root to the array. A regression test intercepts its
+submission path, asserts the correct `POSE_SOURCE`, and checks the
+`run.slurm` and `container.sh` paths. Newly prepared experiments use the
+fixed launcher. Existing prepared experiments are code-hash pinned: submit
+an old experiment with the correct `POSE_SOURCE` **before pulling** this
+patch, or use the updated launcher to prepare a new timestamped experiment.
+Do not edit `manifest.json` to bypass fingerprint checks.
+
+```bash
+export POSE_SOURCE=/vast/home/users/chen.je/promera-pose-guidance
+export POSE_WORK=/vast/scratch/users/chen.je/sandbox/pose-guidance-work
+export POSE_EXPERIMENT="$POSE_WORK/B004__G047__5_389-angle-15-35-smoke-20261117-214323"
+export NOMINEE_CONFIG=/vast/home/users/chen.je/dev/config.yaml
+cd "$POSE_WORK"
+sbatch --partition=gpuq --gres=gpu:A30:1 --time=12:00:00 \
+  --array=0-2%1 "$POSE_SOURCE/experiments/pose_guidance/run.slurm"
+```
+
 ## If an earlier angular smoke stopped in preflight
 
 The original B004/G047/5_389, 15–35 degree smoke failed at 52.481 A because

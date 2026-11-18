@@ -164,8 +164,17 @@ def extra_binds(selection: dict, parent: Path, work: Path, prior: str = "") -> s
 
 def launch(args: argparse.Namespace) -> None:
     selection = select_source(Path(args.run), args.pose_id)
-    repo = Path(__file__).resolve().parents[1]
+    # launch_from_atlas.py lives at <repo>/experiments/pose_guidance/.
+    # parents[1] is <repo>/experiments and duplicates the path on SLURM.
     here = Path(__file__).resolve().parent
+    repo = here.parent.parent
+    expected_launcher = repo / "experiments" / "pose_guidance" / "container.sh"
+    expected_slurm = repo / "experiments" / "pose_guidance" / "run.slurm"
+    if not expected_launcher.is_file() or not expected_slurm.is_file():
+        raise ValueError(
+            f"Invalid experimental repository root {repo}; expected "
+            f"{expected_launcher} and {expected_slurm}"
+        )
     config = Path(args.nominee_config).expanduser().resolve()
     if not config.is_file():
         raise ValueError(f"Missing configured NOMINEE site file: {config}")
