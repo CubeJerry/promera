@@ -11,10 +11,25 @@ of sparse geometry guidance **on the same native B004 basin site**.
 It does not reuse the earlier pilot's CDR-nearest five-residue selection.
 
 The original Epitope Scan recommends template author residues **A:339, A:343**
-for basin B004. They are not the 1-based ordinals of the cropped runtime
-schema. Preparation maps them through Promera's target-template alignment,
-verifies exact amino-acid identity, and checks their original archived B004
-footprint. The original source remains read-only.
+for basin B004. These are PDB **author** residue IDs, NOT native
+TinyProt/Promera template label-sequence IDs and NOT cropped runtime ordinals.
+The reference 8VWP mmCIF has author A:339/A:343 = label_seq_id 272/276;
+the corresponding source-schema positions are 160/164. The preparer reads
+both mmCIF fields, checks the native template alignment and exact amino-acid
+identity, verifies all original B004 basin footprints in author numbering,
+and hashes the copied reference. It rejects numbering ambiguities instead
+of silently selecting the wrong residues. The original source remains read-only.
+
+**Source-site compatibility warning:** these two recommended residues lie
+approximately **15.5 Å and 19.6 Å (nearest CDR Cα)** from the selected
+`B004__G047__5_389` backbone in the original source coordinates. The
+previous five-residue pilot targeted a different, CDR-nearby patch. The
+new preparer records actual source-site distances in `plan.json` and prints
+an explicit warning if any exceed 10 Å. This is important scientifically:
+the basin-recommended native targeting and the reference-pose distance guides
+may be *competing constraints*, not complementary signals. Interpret negative
+combined-condition yields accordingly; do not claim guidance failed solely
+because of an incompatible source-site pair.
 
 ```bash
 cd /vast/home/users/chen.je/promera-pose-guidance
