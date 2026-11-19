@@ -67,7 +67,14 @@ succeeds. This job reads all generated structures and produces:
 - `analysis/basin/RESULTS.md`: ready-to-read comparison of generation,
   CDR-driven contact geometry, pose guidance, diversity and refolds.
 - `analysis/basin/summary.csv`, `per_structure.csv`,
-  `per_sequence.csv`, `diversity.csv` and `errors.json`.
+  `per_sequence.csv`, `by_replicate.csv`, `diversity.csv` and
+  `errors.json`. The report includes **percentage rates and relative
+  enrichment against native B004 targeted-only**; zero control hits
+  are labelled as undefined fold enrichment, not reported as infinity.
+  It distinguishes majority-CDR contact prevalence (>50%) from the
+  stricter Pose Atlas CDR-driven classification (>60% and ≤20° approach).
+  Diversity and self-refold recovery are measured separately for
+  **CDR1, CDR2 and CDR3**.
 - `analysis/basin/basin-analysis.zip`: portable small archive for review,
   containing no large model CIFs.
 - `analysis/auto-analysis.log` and the original `analysis/structures.csv`.
