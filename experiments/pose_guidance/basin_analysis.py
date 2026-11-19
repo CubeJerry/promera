@@ -277,6 +277,8 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             'designed_sequences': len(dd), 'refold_structures': len(rr),
             'backbone_in_source_neighbourhood': sum(r['source_relative_in_0_20'] for r in bb),
             'backbone_cdr_driven': sum(r['epitope_scan_class'] == 'cdr_driven' for r in bb),
+            'backbone_primarily_cdr_contact': sum(
+                r['contact_dominance_class'] == 'primarily_cdr' for r in bb),
             'backbone_framework_driven': sum(r['epitope_scan_class'] == 'framework_driven' for r in bb),
             'backbone_b004_like_proxy': sum(r['b004_like_proxy'] for r in bb),
             'backbone_target_contact_via_cdr': sum(r['target_residue_cdr_contacts'] >= 1 for r in bb),
@@ -293,6 +295,7 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             'best_vhh_rmsd_median_A': _median(d['best_binder_only_ca_rmsd_A'] for d in dd),
             'best_cdr3_rmsd_median_A': _median(d['best_cdr3_framework_rmsd_A'] for d in dd),
             'best_own_dockq_median': _median(d['max_scDockQ'] for d in dd),
+            'best_iptm_median': _median(d['max_iptm'] for d in dd),
             'jobs_completed': sum(x['status']=='completed' for x in totals if x['arm']==arm),
             'jobs_requested': sum(1 for x in totals if x['arm']==arm),
         })
@@ -302,6 +305,8 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             row['backbone_in_source_neighbourhood'] / n if n else None)
         row['cdr_driven_fraction'] = (
             row['backbone_cdr_driven'] / n if n else None)
+        row['primarily_cdr_contact_fraction'] = (
+            row['backbone_primarily_cdr_contact'] / n if n else None)
         row['b004_like_proxy_fraction'] = (
             row['backbone_b004_like_proxy'] / n if n else None)
         row['strict_scDockQ_fraction_per_design'] = (
@@ -373,6 +378,12 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                 'contacting_binder_residues': contact['contacting_binder_residues'],
                 'cdr_contacting_binder_residues': contact['cdr_contacting_binder_residues'],
                 'epitope_scan_class': contact['epitope_scan_class'],
+                'contact_dominance_class': (
+                    'no_contacts' if not contact['contacting_binder_residues'] else
+                    'primarily_cdr' if contact['cdr_contact_fraction'] > 0.5 else
+                    'primarily_framework' if contact['cdr_contact_fraction'] < 0.5 else
+                    'balanced'
+                ),
                 **region,
                 'iptm': float(entry['iptm']) if kind=='refold' and entry.get('iptm') else None,
                 'scDockQ': _dockq(entry, plan) if kind=='refold' else None,
@@ -462,6 +473,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             'generated_backbones':len(bb), 'designed_sequences':len(dd),
             'source_neighbourhood_backbones':sum(x['source_relative_in_0_20'] for x in bb),
             'cdr_driven_backbones':sum(x['epitope_scan_class']=='cdr_driven' for x in bb),
+            'primarily_CDR_contact_backbones':sum(
+                x['contact_dominance_class']=='primarily_cdr' for x in bb),
             'b004_like_proxy_backbones':sum(x['b004_like_proxy'] for x in bb),
             'accepted_scDockQ_gt_023_sequences':sum(x['accepted_scDockQ_gt_023'] for x in dd),
             'accepted_cdr_driven_sequences':sum(
@@ -532,15 +545,16 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             f"{r['accepted_scDockQ_gt_023_provisional']} | {r['accepted_b004_like_proxy']} |"
         )
     lines += ['', '## Enrichment relative to native B004 targeting', '',
-        '| Arm | CDR-driven backbones | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
-        '|---|---:|---:|---:|---:|']
+        '| Arm | Primarily CDR contacts | Pose Atlas CDR-driven | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
+        '|---|---:|---:|---:|---:|---:|']
     def display_fraction(value):
         return f"{value*100:.1f}%" if value is not None else 'n/a'
     for r in summary:
         ratio = r['b004_like_enrichment_vs_targeted']
         fold = f'{ratio:.2f}x' if ratio is not None else 'undefined (zero baseline)'
         lines.append(
-            f"| {r['arm']} | {display_fraction(r['cdr_driven_fraction'])} | "
+            f"| {r['arm']} | {display_fraction(r['primarily_cdr_contact_fraction'])} | "
+            f"{display_fraction(r['cdr_driven_fraction'])} | "
             f"{display_fraction(r['b004_like_proxy_fraction'])} | {fold} | "
             f"{display_fraction(r['strict_scDockQ_fraction_per_design'])} |"
         )
