@@ -202,7 +202,7 @@ def prepare(args: argparse.Namespace) -> None:
     root = Path(args.out).expanduser().resolve()
     if root.exists():
         raise ValueError(f'experiment directory already exists: {root}; use a new directory')
-    n = args.backbones if args.backbones is not None else (2 if args.profile == 'smoke' else 32)
+    n = args.backbones if args.backbones is not None else (2 if args.profile == 'smoke' else 64 if args.profile == 'basin' else 32)
     replicates = args.replicates if args.replicates is not None else (1 if args.profile == 'smoke' else 3)
     if min(n, replicates, args.batch_size, args.sequences_per_backbone) < 1 or not 0 <= args.seed < 2**32 - replicates:
         raise ValueError('invalid budget, batch size or replicate seed')
