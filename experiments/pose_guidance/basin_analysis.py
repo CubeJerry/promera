@@ -538,14 +538,10 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         return f"{value*100:.1f}%" if value is not None else 'n/a'
     for r in summary:
         ratio = r['b004_like_enrichment_vs_targeted']
+        fold = f'{ratio:.2f}x' if ratio is not None else 'undefined (zero baseline)'
         lines.append(
-            f"| {r['arm']} | "
-            f"{display_fraction(r['cdr_driven_fraction'])} | "
-            f"{display_fraction(r['b004_like_proxy_fraction'])} | "
-            f"{ratio:.2f}×" if False else
             f"| {r['arm']} | {display_fraction(r['cdr_driven_fraction'])} | "
-            f"{display_fraction(r['b004_like_proxy_fraction'])} | "
-            f"{f'{ratio:.2f}x' if ratio is not None else 'undefined (zero baseline)'} | "
+            f"{display_fraction(r['b004_like_proxy_fraction'])} | {fold} | "
             f"{display_fraction(r['strict_scDockQ_fraction_per_design'])} |"
         )
     lines += [
