@@ -623,7 +623,7 @@ def template_author_to_native_ids(
                     )
                 selected = {name: tokens[columns.index(name)] for name in required}
                 yield tuple(selected[key] for key in required)
-        author_to_native: dict[str, str] = {}
+    author_to_native: dict[str, str] = {}
     native_to_author: dict[str, str] = {}
     for group, label, author_chain, native_id, author_id, insertion in atom_records():
         if group != 'ATOM' or label != label_chain:
