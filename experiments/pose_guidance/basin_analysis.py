@@ -412,6 +412,26 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         })
     diversity = _diversity(backbones, plan)
     summary = _aggregate(observations, designs, backbones, diversity, totals, manifest)
+    # Independent SLURM replicates, not five refolds or pairwise RMSDs,
+    # define the between-condition experimental repeat.
+    by_replicate = []
+    for job in manifest['jobs']:
+        arm, rep = job['arm'], int(job['replicate'])
+        bb = [x for x in backbones if x['arm']==arm and x['replicate']==rep]
+        dd = [x for x in designs if x['arm']==arm and x['replicate']==rep]
+        by_replicate.append({
+            'arm':arm, 'replicate':rep,
+            'requested_backbones':int(job['requested_backbones']),
+            'generated_backbones':len(bb), 'designed_sequences':len(dd),
+            'source_neighbourhood_backbones':sum(x['source_relative_in_0_20'] for x in bb),
+            'cdr_driven_backbones':sum(x['epitope_scan_class']=='cdr_driven' for x in bb),
+            'b004_like_proxy_backbones':sum(x['b004_like_proxy'] for x in bb),
+            'accepted_scDockQ_gt_023_sequences':sum(x['accepted_scDockQ_gt_023'] for x in dd),
+            'accepted_cdr_driven_sequences':sum(
+                x['accepted_scDockQ_gt_023'] and x['representative_class']=='cdr_driven' for x in dd),
+            'accepted_b004_like_proxy_sequences':sum(
+                x['accepted_scDockQ_gt_023'] and x['representative_b004_like_proxy'] for x in dd),
+        })
     # Refold-specific columns (design/refold indices) must not be dropped just
     # because the first row belongs to a backbone.
     obs_columns = list(dict.fromkeys(
@@ -419,6 +439,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     ))
     _save_csv(output / 'per_structure.csv', [_values(x) for x in observations], obs_columns)
     _save_csv(output / 'per_sequence.csv', designs, list(designs[0]) if designs else [])
+    _save_csv(output / 'by_replicate.csv', by_replicate, list(by_replicate[0]) if by_replicate else [])
     _save_csv(output / 'diversity.csv', diversity, list(diversity[0]) if diversity else [])
     _save_csv(output / 'summary.csv', summary, list(summary[0]) if summary else [])
     (output / 'errors.json').write_text(json.dumps(errors, indent=2)+'\n')
@@ -445,6 +466,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             and all(t['status']=='completed' for t in totals)
         ),
         'summary': summary,
+        'by_replicate': by_replicate,
         'diversity': diversity,
     }
     (output / 'summary.json').write_text(json.dumps(metrics, indent=2, allow_nan=False)+'\n')
@@ -466,6 +488,14 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             f"{r['backbone_cdr_driven']} | {r['backbone_b004_like_proxy']} | "
             f"{r['accepted_scDockQ_gt_023_provisional']} | {r['accepted_b004_like_proxy']} |"
         )
+    lines += ['', '## Independent replicate counts', '',
+        '| Arm | Replicate | CDR-driven backbones | B004-like proxy backbones | Provisional accepted sequences |',
+        '|---|---:|---:|---:|---:|']
+    for r in by_replicate:
+        lines.append(f"| {r['arm']} | {r['replicate']} | "
+                     f"{r['cdr_driven_backbones']}/{r['generated_backbones']} | "
+                     f"{r['b004_like_proxy_backbones']}/{r['generated_backbones']} | "
+                     f"{r['accepted_scDockQ_gt_023_sequences']}/{r['designed_sequences']} |")
     lines += [
         '',
         '## What each measure can establish',
@@ -515,7 +545,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     files = [
         output / name for name in ('RESULTS.md', 'summary.csv', 'summary.json',
                                   'per_structure.csv', 'per_sequence.csv',
-                                  'diversity.csv', 'errors.json')
+                                  'by_replicate.csv', 'diversity.csv', 'errors.json')
     ]
     files += [root/'manifest.json', root/'plan.json', root/'source_atlas_selection.json']
     archive = output / 'basin-analysis.zip'
