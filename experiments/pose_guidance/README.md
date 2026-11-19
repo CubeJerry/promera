@@ -4,6 +4,90 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## B004 basin-targeted comparison (new experiment)
+
+This profile tests native Promera epitope targeting against two variants
+of sparse geometry guidance **on the same native B004 basin site**.
+It does not reuse the earlier pilot's CDR-nearest five-residue selection.
+
+The original Epitope Scan recommends template author residues **A:339, A:343**
+for basin B004. They are not the 1-based ordinals of the cropped runtime
+schema. Preparation maps them through Promera's target-template alignment,
+verifies exact amino-acid identity, and checks their original archived B004
+footprint. The original source remains read-only.
+
+```bash
+cd /vast/home/users/chen.je/promera-pose-guidance
+# Use the separate feature/b004-basin-comparison branch/checkout.
+module load apptainer
+python3 experiments/pose_guidance/launch_from_atlas.py \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --profile basin \
+  --basin-id B004 \
+  --basin-residues A:339,A:343 \
+  --angle-range 0:20 \
+  --backbones 64 \
+  --replicates 3
+```
+
+**Budget:** 3 arms × 3 replicates × 64 backbones = **576 generated
+backbones** (192 per arm). One Boltz-IF sequence per backbone and five
+unrestrained refolds per sequence are requested, up to 2,880 refold predictions;
+the actual number is lower if inverse folding produces no sequence.
+Array concurrency is one A30 GPU. `--no-submit` prepares and preflights
+without scheduling work; `--dry-run` verifies source selection only.
+
+| Arm | Native targeted A:339/A:343 | Additional distance guide |
+|---|---|---|
+| `targeted` | Yes | None (primary control) |
+| `anchors16` | Yes | 16 original-pose sparse distances |
+| `cone16` | Yes | 16 distances from sampled 0–20° approaches |
+
+The launcher submits the GPU array and **a separate CPU-only Slurm job
+with `--dependency=afterok:<array_job_id>`**. It will run
+`container.sh analyse --experiment ...` after the entire GPU array
+succeeds. This job reads all generated structures and produces:
+
+- `analysis/basin/RESULTS.md`: ready-to-read comparison of generation,
+  CDR-driven contact geometry, pose guidance, diversity and refolds.
+- `analysis/basin/summary.csv`, `per_structure.csv`,
+  `per_sequence.csv`, `diversity.csv` and `errors.json`.
+- `analysis/basin/basin-analysis.zip`: portable small archive for review,
+  containing no large model CIFs.
+- `analysis/auto-analysis.log` and the original `analysis/structures.csv`.
+
+The CPU job is intentionally a dependency rather than analysis inside the
+last GPU array task: no race across concurrently written conditions, and
+no GPU allocation is wasted on structural postprocessing. If any GPU job
+fails, `afterok` does not start analysis of partial data.
+
+**Two distinct angles:** `approach_degrees` in the original analysis is
+the **deviation from the source pose approach axis** after antigen alignment.
+The new `epitope_scan_approach_angle_degrees` is the Epitope Scan-style
+angle between VHH framework→CDR and framework→contacted antigen centroids.
+The latter uses a 5 Å heavy-atom contact cutoff, and CDR-driven classification
+is angle ≤20° **and** more than 60% of contacting VHH residues lying in
+CDRs. Backbone-only contacts are less complete than full-atom refold
+contacts, so these stages are reported separately.
+
+The `b004_like_proxy` is deliberately **not an official basin assignment**:
+it requires the CDR-driven geometry, a source-relative deviation ≤20°,
+CDR contact with at least *one* recommended site residue, and the strongest
+historical footprint Jaccard match to B004. Its components are exported
+separately so no threshold hides a plausible alternative pose. Actual
+NOMINEE Epitope Scan binning is a discovery/selection procedure on accepted
+complexes, not merely a two-residue contact check. Likewise, a
+`scDockQ>0.23` count in this report is *provisional* until the production
+structural-usability gate is applied.
+
+Do not interpret a higher CDR-driven pose rate as a higher experimentally
+confirmed binding rate. The archived B004 basin has substantial
+framework-contact dominance, and its recommended residue pair had no
+high-iPTM CDR-driven support among measured supporting candidates in
+the screenshot that motivated this experiment. The targeted control is
+therefore an informative scientific test, not a guaranteed positive control.
+
 ## Larger 0–20 degree site-matched comparison (B004 / G047 / 5_389)
 
 The original two-backbone smoke established that sparse pose distances can
