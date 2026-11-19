@@ -27,7 +27,7 @@ from omegaconf import OmegaConf
 
 from pose_geometry import (align, build_plan, digest, observed_arrays,
                            pose_metrics, read_chains, rmsd,
-                           targeted_site_from_reference, native_epitope_template_ids,
+                           targeted_site_from_reference, native_epitope_template_ids, basin_site_from_author_ids,
                            site_contact_metrics, cone_placement, jitter, cross_distogram)
 
 HERE = Path(__file__).resolve().parent
@@ -84,6 +84,77 @@ def resolve(value: str, base: Path) -> Path:
     return (result if result.is_absolute() else base / result).resolve()
 
 
+
+
+def parse_basin_residues(value: str) -> tuple[str, list[str]]:
+    """Parse native Epitope Scan identifiers rather than truncated-schema positions."""
+    import re
+    pieces = [x.strip() for x in value.split(',')]
+    matches = [re.fullmatch(r'([A-Za-z0-9]+):([0-9]+[A-Za-z]?)', p) for p in pieces]
+    if not pieces or not all(matches):
+        raise ValueError('--basin-residues must resemble A:339,A:343')
+    chains = {m.group(1) for m in matches}
+    ids = [m.group(2) for m in matches]
+    if len(chains) != 1 or len(ids) != len(set(ids)):
+        raise ValueError('basin target residues must be unique and belong to one chain')
+    return next(iter(chains)), ids
+
+
+def basin_reference_from_npz(
+    path: Path, basin_id: str, chain: str, runtime_sequence: str,
+    template_chain: dict[str, Any],
+) -> dict[str, Any]:
+    """Freeze all original basin footprints; leave official assignments untouched.
+
+    Archived labels are author identifiers, whereas generated structures use
+    schema ordinals. Only exact one-to-one identical sequence mappings count.
+    """
+    from promera.inference.utils import align_schema_to_template
+    template_sequence = template_chain['sequence']
+    ids = list(map(str, template_chain['residue_ids']))
+    mapping, stats = align_schema_to_template(runtime_sequence, template_sequence)
+    if float(stats['identity']) < 0.8 or float(stats['coverage']) < 0.7:
+        raise ValueError('cannot map archived basin residues to runtime target')
+    by_author = {ids[ti]: int(si) + 1 for si, ti in mapping.items()
+                 if runtime_sequence[si] == template_sequence[ti] and runtime_sequence[si] != 'X'}
+    with np.load(path, allow_pickle=False) as npz:
+        required = ('basin_id', 'residue_chain', 'residue_author_number',
+                    'basin_residue_indices_flat', 'basin_residue_offsets',
+                    'basin_core_residue_indices_flat', 'basin_core_residue_offsets')
+        if not all(key in npz.files for key in required):
+            raise ValueError('incompatible Epitope Scan basin NPZ (missing signature fields)')
+        names = list(map(str, npz['basin_id']))
+        if basin_id not in names or len(names) != len(set(names)):
+            raise ValueError(f'original basin NPZ does not identify {basin_id} uniquely')
+        original_chains = list(map(str, npz['residue_chain']))
+        original_authors = list(map(str, npz['residue_author_number']))
+        def region(flat_key: str, offset_key: str, i: int) -> tuple[list[str], list[int]]:
+            offsets = npz[offset_key]
+            indices = npz[flat_key][int(offsets[i]):int(offsets[i + 1])]
+            labels = [original_authors[j] for j in indices if original_chains[j] == chain]
+            return labels, sorted({by_author[a] for a in labels if a in by_author})
+        regions = {}
+        for i, name in enumerate(names):
+            originals, runtime = region('basin_residue_indices_flat', 'basin_residue_offsets', i)
+            core_originals, core_runtime = region('basin_core_residue_indices_flat', 'basin_core_residue_offsets', i)
+            regions[name] = {
+                'footprint_schema_positions': runtime,
+                'core_schema_positions': core_runtime,
+                'footprint_mapped': len(runtime),
+                'footprint_original': len(originals),
+                'core_mapped': len(core_runtime),
+            }
+        if not regions[basin_id]['footprint_schema_positions']:
+            raise ValueError(f'no {basin_id} footprint residues map into runtime target')
+        return {
+            'basin_id': basin_id, 'target_chain': chain,
+            'original_basin_count': len(names),
+            'selected_basin_author_ids': region('basin_residue_indices_flat', 'basin_residue_offsets', names.index(basin_id))[0],
+            'regions': regions,
+            'classification': 'descriptive footprint similarity; not an official Epitope Scan basin re-assignment',
+        }
+
+
 def prepare(args: argparse.Namespace) -> None:
     base_path = Path(args.base_config).expanduser().resolve()
     cfg = OmegaConf.to_container(OmegaConf.load(base_path), resolve=True)
@@ -111,19 +182,20 @@ def prepare(args: argparse.Namespace) -> None:
     plan = build_plan(source_chains, schema, cfg['binder']['framework'],
                       cfg['binder']['chain'], guide_binder, target_map)
     plan['source_pose_sha256'] = digest(pose)
-    if args.profile == 'comparison':
+    if args.profile in {'comparison', 'basin'}:
         if getattr(args, 'angle_range', None) is None:
             raise ValueError('comparison requires --angle-range, e.g. 0:20')
         if cfg.get('epitope_residues') or cfg.get('epitope_residue_map'):
             raise ValueError(
-                'comparison derives exactly one shared source-CDR target site; '
+                'comparison/basin supplies a shared native target site; '
                 'the original task already supplies epitope selection'
             )
-        plan['targeted_site'] = targeted_site_from_reference(
-            source_chains, plan,
-            cutoff_angstrom=float(getattr(args, 'site_cutoff_angstrom', 10.0)),
-            max_residues=getattr(args, 'site_residues', 7),
-        )
+        if args.profile == 'comparison':
+            plan['targeted_site'] = targeted_site_from_reference(
+                source_chains, plan,
+                cutoff_angstrom=float(getattr(args, 'site_cutoff_angstrom', 10.0)),
+                max_residues=getattr(args, 'site_residues', 7),
+            )
     msa = resolve(args.msa_dir or str(cfg.get('msa_dir') or ''), base_path.parent)
     if not (args.msa_dir or cfg.get('msa_dir')) or not msa.is_dir():
         raise ValueError('provide an existing target MSA cache with --msa-dir')
@@ -145,6 +217,10 @@ def prepare(args: argparse.Namespace) -> None:
         # inter-chain distances. An untargeted arm remains as context only.
         selected_arms = [('control', 0, 0, 0), ('targeted', 0, 0, 0),
                          ('anchors16', 16, 0, 0), ('cone16', 16, 0, angle_shift)]
+    elif args.profile == 'basin':
+        # Identical native B004 target site; only the two guidance modes differ.
+        selected_arms = [('targeted', 0, 0, 0),
+                         ('anchors16', 16, 0, 0), ('cone16', 16, 0, angle_shift)]
     else:
         selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else list(ARMS)
         if interval is not None:
@@ -155,6 +231,33 @@ def prepare(args: argparse.Namespace) -> None:
         template = resolve(target_template['path'], base_path.parent)
         if not template.is_file():
             raise ValueError(f'target template not found: {template}')
+    if args.profile == 'basin':
+        if not args.basin_npz:
+            raise ValueError('basin profile requires --basin-npz from completed Epitope Scan')
+        if not target_template:
+            raise ValueError('basin author residues require the native target_template')
+        chain, ids = parse_basin_residues(args.basin_residues)
+        native_chain = str(target_template.get('chain') or chain)
+        if native_chain != chain or chain not in schema:
+            raise ValueError('B004 author chain must match native template and runtime target chain')
+        template_chains = read_chains(template)
+        if chain not in template_chains:
+            raise ValueError(f'target template lacks basin chain {chain}')
+        plan['targeted_site'] = basin_site_from_author_ids(
+            schema[chain]['sequence'], template_chains[chain], ids, chain,
+            min_identity=float(target_template.get('min_identity', 0.8)),
+            min_coverage=float(target_template.get('min_coverage', 0.7)),
+        )
+        basin_npz = resolve(str(args.basin_npz), base_path.parent)
+        if not basin_npz.is_file():
+            raise ValueError(f'original Epitope Scan basin archive missing: {basin_npz}')
+        plan['basin_reference'] = basin_reference_from_npz(
+            basin_npz, args.basin_id, chain, schema[chain]['sequence'],
+            template_chains[chain],
+        )
+        if not set(ids).issubset(set(plan['basin_reference']['selected_basin_author_ids'])):
+            raise ValueError('B004 recommended target residues are outside its archived footprint')
+        plan['basin_reference']['npz_sha256'] = digest(basin_npz)
     if args.profile == 'comparison':
         site = plan['targeted_site']
         if target_template:
@@ -181,6 +284,8 @@ def prepare(args: argparse.Namespace) -> None:
     inputs.mkdir()
     shutil.copy2(pose, inputs / 'guide.cif')
     shutil.copy2(base_path, inputs / 'base_config.yaml')
+    if args.profile == 'basin':
+        shutil.copy2(basin_npz, inputs / 'basin_reference.npz')
     write_json(inputs / 'target.json', schema)
     write_json(root / 'plan.json', plan)
     cfg.update(input=str(inputs / 'target.json'), msa_dir=str(msa), target_chains=list(schema),
@@ -199,8 +304,8 @@ def prepare(args: argparse.Namespace) -> None:
         for rep in range(replicates):
             job_cfg = copy.deepcopy(cfg)
             job_cfg['output'] = str(root / 'results' / label / f'rep{rep}')
-            site_enabled = args.profile == 'comparison' and label != 'control'
-            if args.profile == 'comparison':
+            site_enabled = args.profile in {'comparison', 'basin'} and label != 'control'
+            if args.profile in {'comparison', 'basin'}:
                 # Use Promera's *native* targeted epitope configuration, not
                 # an extra feature injection after featurization. Mapping
                 # schema positions to full-template author IDs means the
@@ -227,6 +332,8 @@ def prepare(args: argparse.Namespace) -> None:
                          'requested_backbones': n, 'targeted_site_enabled': site_enabled})
     manifest = {
         'schema_version': 1, 'profile': args.profile, 'jobs': jobs,
+        'basin_id': args.basin_id if args.profile == 'basin' else None,
+        'basin_reference_sha256': digest(inputs / 'basin_reference.npz') if args.profile == 'basin' else None,
         'plan_sha256': digest(root / 'plan.json'), 'source_config_sha256': digest(base_path),
         'guide_sha256': digest(inputs / 'guide.cif'),
         'target_sha256': digest(inputs / 'target.json'),
@@ -242,7 +349,7 @@ def prepare(args: argparse.Namespace) -> None:
         'angle_range_requested_degrees': list(interval) if interval else None,
         'comparison_primary_contrast': (
             'targeted_only_vs_cone16_same_epitope_and_seeds'
-            if args.profile == 'comparison' else None
+            if args.profile in {'comparison', 'basin'} else None
         ),
         'targeted_site': plan.get('targeted_site'),
         'targeted_site_residue_count': (
@@ -256,7 +363,8 @@ def prepare(args: argparse.Namespace) -> None:
         'primary_endpoint': (
             'generated_backbone_approach_in_requested_angle_interval_AND_'
             'at_least_three_source_site_antigen_CAs_within_site_cutoff_of_generated_CDR_CAs'
-            if args.profile == 'comparison' else None
+            if args.profile == 'comparison' else
+            'exploratory_b004_like_contact_and_pose_metrics_in_basin_analysis' if args.profile == 'basin' else None
         ),
         'paired_design': 'matched_random_seed_and_backbone_index_across_arms',
         'selection_note': 'Generation-guidance range is a preference. Evaluate actual unrestrained output in the same interval; these are not validated binding cutoffs.',
@@ -284,6 +392,8 @@ def job_config(root: Path, index: int) -> tuple[dict[str, Any], Any, Path]:
               root / 'inputs/target.json': manifest['target_sha256']}
     if manifest.get('target_template_sha256'):
         checks[root / 'inputs/target_template.cif'] = manifest['target_template_sha256']
+    if manifest.get('basin_reference_sha256'):
+        checks[root / 'inputs/basin_reference.npz'] = manifest['basin_reference_sha256']
     for filename, expected in checks.items():
         if digest(filename) != expected:
             raise ValueError(f'prepared input/config changed: {filename}; prepare a new experiment')
@@ -626,10 +736,15 @@ def analyse(root: Path) -> None:
                     <= threshold['approach_degrees_max'] + 1e-5
                 )
                 site_hits = (
-                    int(site_metrics['site_contacted_residues']) >= 3
+                    int(site_metrics['site_contacted_residues']) >=
+                    (1 if manifest['profile'] == 'basin' else 3)
                     if plan.get('targeted_site') else False
                 )
-                primary_hit = bool(angle_in_range and site_hits) if plan.get('targeted_site') else None
+                primary_hit = (
+                    bool(angle_in_range and site_hits)
+                    if plan.get('targeted_site') and manifest['profile'] != 'basin'
+                    else None
+                )
                 backbone_match = _passes_geometry(bm, threshold)
                 guidance_file = backbone.parent / 'pose_guidance.json'
                 guidance = load_json(guidance_file) if guidance_file.is_file() else {}
@@ -738,6 +853,9 @@ def analyse(root: Path) -> None:
         ])
         write_json(destination / 'comparison.json', effect)
     write_json(destination / 'errors.json', errors)
+    if manifest.get('profile') == 'basin':
+        from basin_analysis import analyse_basin
+        analyse_basin(root, rows, totals, plan, manifest)
     print(json.dumps({'analysis': str(destination), 'geometry_matched_unique_sequences': len(exports),
                       'parse_errors': len(errors), 'note': 'Exports are screening inputs, not validated binders or production passers.'}, indent=2))
     if errors:
@@ -754,7 +872,13 @@ def main() -> None:
     prep.add_argument('--target-map', help='JSON map: runtime chain -> guide chain; default identical IDs')
     prep.add_argument('--msa-dir')
     prep.add_argument('--out', required=True)
-    prep.add_argument('--profile', choices=['smoke', 'pilot', 'comparison'], default='smoke')
+    prep.add_argument('--profile', choices=['smoke', 'pilot', 'comparison', 'basin'], default='smoke')
+    prep.add_argument('--basin-id', default='B004',
+                      help='Epitope Scan basin ID for archived region comparison (default B004)')
+    prep.add_argument('--basin-residues', default='A:339,A:343',
+                      help='Basin recommended template author residues (default A:339,A:343)')
+    prep.add_argument('--basin-npz',
+                      help='Original epitope_basins.npz; required for basin profile')
     prep.add_argument('--site-cutoff-angstrom', type=float, default=10.0,
                       help='comparison: source-CDR CA neighbourhood for site candidates (default 10 A)')
     prep.add_argument('--site-residues', type=int, default=7,
