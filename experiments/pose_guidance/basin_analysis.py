@@ -412,7 +412,11 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         })
     diversity = _diversity(backbones, plan)
     summary = _aggregate(observations, designs, backbones, diversity, totals, manifest)
-    obs_columns = [k for k in observations[0] if not k.startswith('_')] if observations else []
+    # Refold-specific columns (design/refold indices) must not be dropped just
+    # because the first row belongs to a backbone.
+    obs_columns = list(dict.fromkeys(
+        k for row in observations for k in row if not k.startswith('_')
+    ))
     _save_csv(output / 'per_structure.csv', [_values(x) for x in observations], obs_columns)
     _save_csv(output / 'per_sequence.csv', designs, list(designs[0]) if designs else [])
     _save_csv(output / 'diversity.csv', diversity, list(diversity[0]) if diversity else [])
