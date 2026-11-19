@@ -151,3 +151,58 @@ def test_cpu_analysis_submission_uses_afterok():
     launch = Path(__file__).with_name('launch_from_atlas.py').read_text()
     assert 'afterok:{array_job_id}' in launch
     assert 'basin-analysis.zip' in launch
+
+
+def test_basin_launcher_schedules_cpu_analysis_after_whole_array(tmp_path, monkeypatch):
+    import argparse
+    import launch_from_atlas as atlas
+    from test_pose_guidance import _synthetic_atlas_run
+
+    run, *_ = _synthetic_atlas_run(tmp_path)
+    old_basin = run/'analysis'/'epitope_scan'/'epitope_basins.npz'
+    old_basin.parent.mkdir(parents=True, exist_ok=True)
+    old_basin.write_bytes(b'archived fixture, not read during mocked launch')
+    site = tmp_path/'dev'/'config.yaml'
+    site.parent.mkdir(parents=True)
+    site.write_text(f"paths:\n  installation_parent: {tmp_path/'installation'}\n")
+    args = argparse.Namespace(
+        run=str(run), pose_id='B004__G047__5_389',
+        angle_range='0:20', profile='basin',
+        basin_id='B004', basin_residues='A:339,A:343',
+        nominee_config=str(site), work=str(tmp_path/'work'),
+        backbones=4, replicates=2, dry_run=False, no_submit=False,
+    )
+    invoked = []
+    def fake_run(argv, **kwargs):
+        invoked.append(list(argv))
+        if 'prepare' in argv:
+            assert argv[argv.index('--basin-npz')+1] == str(old_basin)
+            assert argv[argv.index('--basin-residues')+1] == 'A:339,A:343'
+            root = Path(argv[argv.index('--out')+1])
+            root.mkdir(parents=True, exist_ok=True)
+            jobs = [{'index':i,'arm':arm,'replicate':rep,'requested_backbones':4}
+                    for i,(arm,rep) in enumerate(
+                        (arm,rep) for arm in ('targeted','anchors16','cone16')
+                        for rep in range(2))]
+            (root/'manifest.json').write_text(json.dumps({
+                'jobs': jobs, 'inverse_folder': 'boltzif', 'sequences_per_backbone':1
+            }))
+        return types.SimpleNamespace(returncode=0)
+    submissions = []
+    def fake_check_output(argv, **kwargs):
+        submissions.append(list(argv))
+        return str(8001+len(submissions))+'\n'
+    monkeypatch.setattr(atlas.subprocess,'run',fake_run)
+    monkeypatch.setattr(atlas.subprocess,'check_output',fake_check_output)
+    monkeypatch.setattr(atlas,'shutil_which_sbatch',lambda:True)
+    atlas.launch(args)
+    assert len(invoked)==7  # preparation plus six CPU preflights
+    assert len(submissions)==2
+    assert '--array=0-5%1' in submissions[0]
+    assert '--dependency=afterok:8002' in submissions[1]
+    assert submissions[1][-1].endswith('/analyse.slurm')
+    exp = Path(invoked[0][invoked[0].index('--out')+1])
+    source = json.loads((exp/'source_atlas_selection.json').read_text())
+    assert source['basin_id']=='B004'
+    assert source['basin_recommended_residues']=='A:339,A:343'
+    assert source['epitope_scan_basin_archive_sha256'] == atlas._sha256(old_basin)
