@@ -281,6 +281,8 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             'backbone_b004_like_proxy': sum(r['b004_like_proxy'] for r in bb),
             'backbone_target_contact_via_cdr': sum(r['target_residue_cdr_contacts'] >= 1 for r in bb),
             'backbone_cdr_angle_median_degrees': _median(r['epitope_scan_approach_angle_degrees'] for r in bb),
+            'backbone_delta_cdr_angle_from_source_median_degrees': _median(
+                r['delta_epitope_scan_angle_from_source_degrees'] for r in bb),
             'backbone_source_relative_median_degrees': _median(r['source_relative_angle_degrees'] for r in bb),
             'backbone_cdr_fraction_median': _median(r['cdr_contact_fraction'] for r in bb),
             'accepted_scDockQ_gt_023_provisional': sum(d['accepted_scDockQ_gt_023'] for d in dd),
@@ -305,6 +307,13 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     output = root / 'analysis' / 'basin'
     output.mkdir(parents=True, exist_ok=True)
     observations, backbones, errors, grouped = [], [], [], defaultdict(list)
+    # Directly measure the reference backbone rather than assume the Atlas's
+    # representative-refold approach angle also describes the raw backbone.
+    reference = _structure(root / 'inputs' / 'guide.cif', plan)
+    source_binder = reference[plan['binder_chain']]
+    source_fixed, source_loops = _loop_ranges(source_binder['sequence'], plan['framework'])
+    source_contacts = _contacts(reference, plan, source_fixed, source_loops)
+    source_angle = source_contacts['epitope_scan_approach_angle_degrees']
     backbone_cache = {}
     for entry in existing:
         path = Path(entry['cif']).resolve()
@@ -332,6 +341,11 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                 'source_relative_angle_degrees': source_relative,
                 'source_framework_rmsd_A': float(entry['source_framework_rmsd']),
                 'epitope_scan_approach_angle_degrees': contact['epitope_scan_approach_angle_degrees'],
+                'delta_epitope_scan_angle_from_source_degrees': (
+                    abs(float(contact['epitope_scan_approach_angle_degrees']) - float(source_angle))
+                    if source_angle is not None and contact['epitope_scan_approach_angle_degrees'] is not None
+                    else None
+                ),
                 'cdr_contact_fraction': contact['cdr_contact_fraction'],
                 'contacting_binder_residues': contact['contacting_binder_residues'],
                 'cdr_contacting_binder_residues': contact['cdr_contacting_binder_residues'],
@@ -445,6 +459,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     (output / 'errors.json').write_text(json.dumps(errors, indent=2)+'\n')
     metrics = {
         'profile': 'basin', 'basin_id': manifest['basin_id'],
+        'source_backbone_epitope_scan_approach_angle_degrees': source_angle,
+        'source_backbone_epitope_scan_CDR_fraction': source_contacts['cdr_contact_fraction'],
+        'source_backbone_epitope_scan_class': source_contacts['epitope_scan_class'],
         'source_pose_sha256': plan['source_pose_sha256'],
         'basin_source_npz_sha256': plan['basin_reference']['npz_sha256'],
         'site_author_ids': plan['targeted_site']['native_epitope_residue_ids'],
@@ -475,6 +492,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         '',
         'Recommended native target IDs: ' + ', '.join('A:'+x for x in metrics['site_author_ids']),
         'Source pose: B004__G047__5_389; angular guidance: 0–20° relative to this pose.',
+        'Measured source BACKBONE Epitope Scan-style approach angle: '
+          + str(source_angle) + '°; class: ' + source_contacts['epitope_scan_class']
+          + ' (Atlas display may report the selected REFOLD angle instead).',
         'Epitope Scan approach = angle between F→CDR and F→contacted-antigen centroids,',
         'not the same measure as source-relative orientation.',
         '',
