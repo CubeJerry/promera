@@ -561,23 +561,81 @@ def native_epitope_template_ids(
 
 
 
+def template_author_to_native_ids(
+    template_cif: str | Path, label_chain: str,
+) -> dict[str, str]:
+    """Map PDB *author* antigen IDs onto the native TinyProt template IDs.
+
+    Epitope Scan uses auth_seq_id; Promera's native epitope/template code
+    uses Structure.chain.ridx (label_seq_id in this source structure).
+    Treating numeric author IDs as native IDs silently targets wrong residues.
+    """
+    try:
+        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+    except ImportError as exc:
+        raise ValueError(
+            "Biopython MMCIF2Dict is required to resolve Epitope Scan author "
+            "residues; rebuild the experimental Promera image with Biopython "
+            "or use an image where Bio.PDB is already available"
+        ) from exc
+    data = MMCIF2Dict(str(template_cif))
+    required = [
+        '_atom_site.group_PDB',
+        '_atom_site.label_asym_id', '_atom_site.auth_asym_id',
+        '_atom_site.label_seq_id', '_atom_site.auth_seq_id',
+        '_atom_site.pdbx_PDB_ins_code',
+    ]
+    if any(key not in data for key in required):
+        raise ValueError('target template mmCIF is missing author/label atom_site identifiers')
+    columns = [data[key] for key in required]
+    lengths = set(map(len, columns))
+    if len(lengths) != 1:
+        raise ValueError('target template mmCIF atom_site columns have inconsistent lengths')
+    author_to_native: dict[str, str] = {}
+    native_to_author: dict[str, str] = {}
+    for group, label, author_chain, native_id, author_id, insertion in zip(*columns):
+        if group != 'ATOM' or label != label_chain:
+            continue
+        if not native_id or native_id in {'.', '?'} or not author_id or author_id in {'.','?'}:
+            continue
+        if author_chain != label_chain:
+            # The Epitope Scan screenshot uses author chain A. Chain aliases
+            # need an explicit map, never a silent assumption.
+            raise ValueError(
+                f'target template label chain {label_chain} has a different author '
+                f'chain {author_chain}; resolve the chain map before targeting'
+            )
+        insertion = '' if insertion in {'.', '?'} else str(insertion)
+        author_key = str(author_id) + insertion
+        native_id = str(native_id)
+        if (author_key in author_to_native and author_to_native[author_key] != native_id
+                or native_id in native_to_author and native_to_author[native_id] != author_key):
+            raise ValueError('ambiguous native/author residue numbering in target template')
+        author_to_native[author_key] = native_id
+        native_to_author[native_id] = author_key
+    if not author_to_native:
+        raise ValueError(f'no polymer atom_site records for target chain {label_chain}')
+    return author_to_native
+
+
 def basin_site_from_author_ids(
     target_sequence: str, template_chain: dict[str, Any],
     author_residue_ids: list[str], chain: str, *,
+    author_to_native_ids: dict[str, str],
     min_identity: float = 0.8, min_coverage: float = 0.7,
     aligner: Any | None = None,
 ) -> dict[str, Any]:
-    """Resolve explicit Epitope Scan author IDs into native Promera schema positions.
+    """Resolve Epitope Scan author IDs through native label IDs into runtime positions.
 
-    Never confuse author IDs (e.g. A:339) with cropped runtime ordinals.
-    Apply Promera's semi-global mapping and verify each amino acid exactly.
+    Distinguish three numbering systems: PDB author numbering, template
+    chain.ridx native IDs and 1-based cropped Promera target-schema positions.
     """
     if not author_residue_ids or len(set(author_residue_ids)) != len(author_residue_ids):
         raise ValueError('basin target residues must be distinct, nonempty author IDs')
     template_seq = str(template_chain['sequence'])
-    ids = [str(x) for x in template_chain['residue_ids']]
-    if len(ids) != len(template_seq) or len(set(ids)) != len(ids):
-        raise ValueError('ambiguous or incomplete target-template residue identifiers')
+    native_ids = [str(x) for x in template_chain['residue_ids']]
+    if len(native_ids) != len(template_seq) or len(set(native_ids)) != len(native_ids):
+        raise ValueError('ambiguous or incomplete native target-template residue identifiers')
     if aligner is None:
         from promera.inference.utils import align_schema_to_template
         aligner = align_schema_to_template
@@ -587,40 +645,54 @@ def basin_site_from_author_ids(
             or len(set(mapping.values())) != len(mapping)):
         raise ValueError('B004 target-template alignment failed identity/coverage/uniqueness checks')
     inverse = {j: i for i, j in mapping.items()}
-    template_by_author = {rid: i for i, rid in enumerate(ids)}
-    positions = []
+    template_by_native = {rid: i for i, rid in enumerate(native_ids)}
+    positions, selected_native = [], []
     for rid in author_residue_ids:
-        if rid not in template_by_author:
-            raise ValueError(f'Epitope Scan target {chain}:{rid} not found in target template')
-        ti = template_by_author[rid]
+        template_native_id = author_to_native_ids.get(str(rid))
+        if template_native_id is None:
+            raise ValueError(f'Epitope Scan author target {chain}:{rid} not found in target mmCIF')
+        ti = template_by_native.get(template_native_id)
+        if ti is None:
+            raise ValueError(
+                f'Epitope Scan {chain}:{rid} maps to label_seq_id {template_native_id} '
+                'which TinyProt did not retain; cannot condition safely'
+            )
         si = inverse.get(ti)
         if si is None or target_sequence[si] != template_seq[ti] or target_sequence[si] == 'X':
-            raise ValueError(f'Epitope Scan target {chain}:{rid} is absent or changed in runtime target')
+            raise ValueError(
+                f'Epitope Scan target {chain}:{rid} is absent or changed in runtime target'
+            )
         positions.append(si + 1)
+        selected_native.append(template_native_id)
     if len(set(positions)) != len(positions):
-        raise ValueError('B004 author residues map to duplicate schema positions')
+        raise ValueError('B004 author residues map to duplicate runtime positions')
     site = {
         'chain': chain,
         'schema_positions_1_based': positions,
-        'native_epitope_residue_ids': list(author_residue_ids),
-        'native_epitope_numbering': 'target_template_residue_ids',
+        'epitope_scan_author_residue_ids': list(author_residue_ids),
+        'native_epitope_residue_ids': selected_native,
+        'native_epitope_numbering': 'target_template_label_seq_ids',
         'native_template_chain': chain,
         'source_cdr_ca_cutoff_angstrom': 10.0,
         'source_target_residue_count': len(positions),
         'selection_policy': 'epitope_scan_basin_recommended_author_residues',
-        'residue_numbering': '1-based runtime schema ordinals mapped from template author IDs',
+        'residue_numbering': 'Epitope Scan author -> template native -> runtime schema',
         'template_alignment': {
             'method': 'promera.inference.utils.align_schema_to_template',
             'identity': float(stats['identity']), 'coverage': float(stats['coverage']),
             'runtime_length': len(target_sequence), 'template_length': len(template_seq),
-            'schema_to_template_residue_ids': {str(p): r for p, r in zip(positions, author_residue_ids)},
+            'author_to_native_to_schema': {
+                f'{chain}:{rid}': {'native_label_seq_id': native,
+                                  'schema_position_1_based': p}
+                for rid, native, p in zip(author_residue_ids, selected_native, positions)
+            },
         },
     }
     if native_epitope_template_ids(
         site, target_sequence, template_chain,
         min_identity=min_identity, min_coverage=min_coverage, aligner=aligner,
-    ) != author_residue_ids:
-        raise ValueError('inverse B004 author-to-schema mapping failed round-trip validation')
+    ) != selected_native:
+        raise ValueError('B004 author/native/schema round-trip failed')
     return site
 
 
