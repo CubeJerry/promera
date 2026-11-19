@@ -292,30 +292,35 @@ def launch(args: argparse.Namespace) -> None:
         return
     if not shutil_which_sbatch():
         raise ValueError("sbatch not found on PATH; run from the HPC login node")
-    submitted = subprocess.check_output(
-        ["sbatch", "--parsable", f"--array={array}", str(here / "run.slurm")],
-        env=env, cwd=str(work), text=True,
-    ).strip()
-    array_job_id = submitted.split(";", 1)[0]
-    if not array_job_id.isdigit():
-        raise ValueError(f"Cannot parse Slurm array job ID: {submitted!r}")
-    # Run one CPU postprocessing job only after the ENTIRE GPU array succeeds.
-    # No race between final GPU writes and analysis, and no GPU is reserved.
-    postprocess = subprocess.check_output(
-        ["sbatch", "--parsable", f"--dependency=afterok:{array_job_id}",
-         str(here / "analyse.slurm")],
-        env=env, cwd=str(work), text=True,
-    ).strip().split(";", 1)[0]
-    print(f"GPU array job {array_job_id}; CPU analysis job {postprocess} (afterok).", flush=True)
+    if profile == "basin":
+        submitted = subprocess.check_output(
+            ["sbatch", "--parsable", f"--array={array}", str(here / "run.slurm")],
+            env=env, cwd=str(work), text=True,
+        ).strip()
+        array_job_id = submitted.split(";", 1)[0]
+        if not array_job_id.isdigit():
+            raise ValueError(f"Cannot parse Slurm array job ID: {submitted!r}")
+        # One CPU report only after the entire GPU array completed successfully.
+        postprocess = subprocess.check_output(
+            ["sbatch", "--parsable", f"--dependency=afterok:{array_job_id}",
+             str(here / "analyse.slurm")],
+            env=env, cwd=str(work), text=True,
+        ).strip().split(";", 1)[0]
+        print(f"GPU array job {array_job_id}; CPU analysis job {postprocess} (afterok).", flush=True)
+    else:
+        # Leave earlier pilot launch semantics unchanged.
+        subprocess.run(["sbatch", f"--array={array}", str(here / "run.slurm")],
+                       check=True, env=env, cwd=str(work))
     n_backbones = sum(int(job['requested_backbones']) for job in jobs)
     sequences = int(prepared_manifest.get('sequences_per_backbone', 1))
     inverse = prepared_manifest.get('inverse_folder', 'boltzif')
     refolds = 0 if inverse == 'none' else n_backbones * sequences * 5
     print(f"Submitted: {len(jobs)} jobs, {n_backbones} backbones, up to {refolds} refolds.", flush=True)
-    print(f"Automatic analysis: {experiment}/analysis/basin/RESULTS.md "
-          "(basin profile), or analysis/ (other profiles).", flush=True)
-    print(f"Portable archive for basin profile: "
-          f"{experiment}/analysis/basin/basin-analysis.zip", flush=True)
+    if profile == "basin":
+        print(f"Automatic analysis: {experiment}/analysis/basin/RESULTS.md", flush=True)
+        print(f"Portable results archive: {experiment}/analysis/basin/basin-analysis.zip", flush=True)
+    else:
+        print(f"After completion: bash {launcher} analyse --experiment {experiment}", flush=True)
 
 
 def shutil_which_sbatch() -> bool:
