@@ -170,7 +170,9 @@ def launch(args: argparse.Namespace) -> None:
     repo = here.parent.parent
     expected_launcher = repo / "experiments" / "pose_guidance" / "container.sh"
     expected_slurm = repo / "experiments" / "pose_guidance" / "run.slurm"
-    if not expected_launcher.is_file() or not expected_slurm.is_file():
+    expected_analysis_slurm = repo / "experiments" / "pose_guidance" / "analyse.slurm"
+    if (not expected_launcher.is_file() or not expected_slurm.is_file()
+            or not expected_analysis_slurm.is_file()):
         raise ValueError(
             f"Invalid experimental repository root {repo}; expected "
             f"{expected_launcher} and {expected_slurm}"
@@ -190,8 +192,21 @@ def launch(args: argparse.Namespace) -> None:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     tag = re.sub(r"[^A-Za-z0-9-]+", "-", interval)
     profile = getattr(args, "profile", "smoke")
-    if profile not in {"smoke", "comparison"}:
-        raise ValueError("launcher profile must be smoke or comparison")
+    if profile not in {"smoke", "comparison", "basin"}:
+        raise ValueError("launcher profile must be smoke, comparison or basin")
+    if profile == "basin":
+        requested_basin = str(getattr(args, "basin_id", "B004"))
+        if requested_basin != selection["pose_id"].split("__")[0]:
+            raise ValueError("requested historical basin must match selected Atlas pose basin")
+        candidate_npz = [
+            selection["run"] / "analysis/epitope_scan/epitope_basins.npz",
+            selection["run"] / "epitope_scan/epitope_basins.npz",
+        ]
+        present = [p for p in candidate_npz if p.is_file()]
+        if len(present) != 1:
+            raise ValueError("Expected one original Epitope Scan epitope_basins.npz: "
+                             + ", ".join(map(str, candidate_npz)))
+        basin_npz = present[0]
     name = f"{selection['pose_id']}-angle-{tag}-{profile}-{stamp}"
     experiment = work / name
     if experiment.exists():
@@ -227,6 +242,12 @@ def launch(args: argparse.Namespace) -> None:
         prepare_command.extend(["--backbones", str(args.backbones)])
     if getattr(args, "replicates", None) is not None:
         prepare_command.extend(["--replicates", str(args.replicates)])
+    if profile == "basin":
+        prepare_command.extend([
+            "--basin-id", requested_basin,
+            "--basin-residues", str(args.basin_residues),
+            "--basin-npz", str(basin_npz),
+        ])
     if profile == "comparison":
         prepare_command.extend([
             "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0)),
@@ -243,6 +264,10 @@ def launch(args: argparse.Namespace) -> None:
         "source_promera_backend_config": str(selection["base_config"]),
         "source_promera_backend_config_sha256": _sha256(selection["base_config"]),
         "approach_angle_range_degrees": list(map(float, interval.split(":"))),
+        "basin_id": requested_basin if profile == "basin" else None,
+        "basin_recommended_residues": str(args.basin_residues) if profile == "basin" else None,
+        "epitope_scan_basin_archive": str(basin_npz) if profile == "basin" else None,
+        "epitope_scan_basin_archive_sha256": _sha256(basin_npz) if profile == "basin" else None,
     }, indent=2) + "\n")
     prepared_manifest = _load_json(experiment / "manifest.json")
     jobs = prepared_manifest.get("jobs", [])
@@ -260,19 +285,42 @@ def launch(args: argparse.Namespace) -> None:
     print(f"All {len(jobs)} CPU preflights passed.", flush=True)
     if args.no_submit:
         print("No job submitted (--no-submit).", flush=True)
-        print(f"To submit: POSE_SOURCE={repo} POSE_WORK={work} "
-              f"POSE_EXPERIMENT={experiment} sbatch --array={array} {here / 'run.slurm'}")
+        print(f"To submit GPU array: POSE_SOURCE={repo} POSE_WORK={work} "
+              f"POSE_EXPERIMENT={experiment} sbatch --parsable --array={array} {here / 'run.slurm'}")
+        print(f"Then submit analysis with dependency: "
+              f"sbatch --dependency=afterok:<GPU_ARRAY_JOB_ID> {here / 'analyse.slurm'}")
         return
     if not shutil_which_sbatch():
         raise ValueError("sbatch not found on PATH; run from the HPC login node")
-    subprocess.run(["sbatch", f"--array={array}", str(here / "run.slurm")],
-                   check=True, env=env, cwd=str(work))
+    if profile == "basin":
+        submitted = subprocess.check_output(
+            ["sbatch", "--parsable", f"--array={array}", str(here / "run.slurm")],
+            env=env, cwd=str(work), text=True,
+        ).strip()
+        array_job_id = submitted.split(";", 1)[0]
+        if not array_job_id.isdigit():
+            raise ValueError(f"Cannot parse Slurm array job ID: {submitted!r}")
+        # One CPU report only after the entire GPU array completed successfully.
+        postprocess = subprocess.check_output(
+            ["sbatch", "--parsable", f"--dependency=afterok:{array_job_id}",
+             str(here / "analyse.slurm")],
+            env=env, cwd=str(work), text=True,
+        ).strip().split(";", 1)[0]
+        print(f"GPU array job {array_job_id}; CPU analysis job {postprocess} (afterok).", flush=True)
+    else:
+        # Leave earlier pilot launch semantics unchanged.
+        subprocess.run(["sbatch", f"--array={array}", str(here / "run.slurm")],
+                       check=True, env=env, cwd=str(work))
     n_backbones = sum(int(job['requested_backbones']) for job in jobs)
     sequences = int(prepared_manifest.get('sequences_per_backbone', 1))
     inverse = prepared_manifest.get('inverse_folder', 'boltzif')
     refolds = 0 if inverse == 'none' else n_backbones * sequences * 5
     print(f"Submitted: {len(jobs)} jobs, {n_backbones} backbones, up to {refolds} refolds.", flush=True)
-    print(f"After completion: bash {launcher} analyse --experiment {experiment}", flush=True)
+    if profile == "basin":
+        print(f"Automatic analysis: {experiment}/analysis/basin/RESULTS.md", flush=True)
+        print(f"Portable results archive: {experiment}/analysis/basin/basin-analysis.zip", flush=True)
+    else:
+        print(f"After completion: bash {launcher} analyse --experiment {experiment}", flush=True)
 
 
 def shutil_which_sbatch() -> bool:
@@ -285,12 +333,15 @@ def main() -> int:
     parser.add_argument("--run", required=True, help="Completed NOMINEE run root containing analysis/epitope_scan")
     parser.add_argument("--pose-id", default=DEFAULT_POSE)
     parser.add_argument("--angle-range", default="15:35", help="Deviation from selected VHH approach (degrees)")
-    parser.add_argument("--profile", choices=("smoke", "comparison"), default="smoke",
-                        help="smoke: three-arm small run; comparison: 4-arm same-site benchmark")
+    parser.add_argument("--profile", choices=("smoke", "comparison", "basin"), default="smoke",
+                        help="smoke: small; comparison: source-site; basin: native targeted vs 2 pose-guided arms")
     parser.add_argument("--backbones", type=int,
                         help="backbones per condition/replicate (comparison default: 32)")
     parser.add_argument("--replicates", type=int,
                         help="independent replicate groups per arm (comparison default: 3)")
+    parser.add_argument("--basin-id", default="B004", help="Original Epitope Scan basin")
+    parser.add_argument("--basin-residues", default="A:339,A:343",
+                        help="Native target-template author IDs; B004 recommendations")
     parser.add_argument("--site-cutoff-angstrom", type=float, default=10.0,
                         help="comparison: candidate C-alpha source CDR neighbourhood (default 10 A)")
     parser.add_argument("--site-residues", type=int, default=7,
