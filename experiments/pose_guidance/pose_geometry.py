@@ -570,30 +570,62 @@ def template_author_to_native_ids(
     uses Structure.chain.ridx (label_seq_id in this source structure).
     Treating numeric author IDs as native IDs silently targets wrong residues.
     """
-    try:
-        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
-    except ImportError as exc:
-        raise ValueError(
-            "Biopython MMCIF2Dict is required to resolve Epitope Scan author "
-            "residues; rebuild the experimental Promera image with Biopython "
-            "or use an image where Bio.PDB is already available"
-        ) from exc
-    data = MMCIF2Dict(str(template_cif))
+    # Standalone streaming parser for the PDB mmCIF atom_site loop.
+    # No added dependency is needed in the existing immutable Promera image.
+    # Refuse malformed rows and ambiguous mappings rather than guessing.
+    import shlex
     required = [
         '_atom_site.group_PDB',
         '_atom_site.label_asym_id', '_atom_site.auth_asym_id',
         '_atom_site.label_seq_id', '_atom_site.auth_seq_id',
         '_atom_site.pdbx_PDB_ins_code',
     ]
-    if any(key not in data for key in required):
-        raise ValueError('target template mmCIF is missing author/label atom_site identifiers')
-    columns = [data[key] for key in required]
-    lengths = set(map(len, columns))
-    if len(lengths) != 1:
-        raise ValueError('target template mmCIF atom_site columns have inconsistent lengths')
-    author_to_native: dict[str, str] = {}
+    columns: list[str] = []
+    in_loop, in_atoms, found = False, False, False
+    def atom_records():
+        nonlocal in_loop, in_atoms, found, columns
+        with Path(template_cif).open(encoding='utf-8') as handle:
+            for raw in handle:
+                line = raw.strip()
+                if line == 'loop_':
+                    if in_atoms:
+                        break
+                    columns, in_loop = [], True
+                    continue
+                if line == '#':
+                    if in_atoms:
+                        break
+                    columns, in_loop = [], False
+                    continue
+                if not line:
+                    continue
+                if in_loop and line.startswith('_'):
+                    if in_atoms:
+                        raise ValueError('unexpected mmCIF column inside atom_site data')
+                    columns.append(line.split()[0])
+                    continue
+                if not in_loop or not columns:
+                    continue
+                if not in_atoms:
+                    if not all(key in columns for key in required):
+                        # Another loop; ignore it until its delimiter.
+                        in_loop = False
+                        continue
+                    in_atoms = True
+                    found = True
+                if line.startswith(';'):
+                    raise ValueError('multiline atom_site values are unsupported')
+                tokens = shlex.split(line, comments=False, posix=True)
+                if len(tokens) != len(columns):
+                    raise ValueError(
+                        f'malformed atom_site row: {len(tokens)} values for '
+                        f'{len(columns)} columns; use standard PDB mmCIF'
+                    )
+                selected = {name: tokens[columns.index(name)] for name in required}
+                yield tuple(selected[key] for key in required)
+        author_to_native: dict[str, str] = {}
     native_to_author: dict[str, str] = {}
-    for group, label, author_chain, native_id, author_id, insertion in zip(*columns):
+    for group, label, author_chain, native_id, author_id, insertion in atom_records():
         if group != 'ATOM' or label != label_chain:
             continue
         if not native_id or native_id in {'.', '?'} or not author_id or author_id in {'.','?'}:
@@ -613,8 +645,8 @@ def template_author_to_native_ids(
             raise ValueError('ambiguous native/author residue numbering in target template')
         author_to_native[author_key] = native_id
         native_to_author[native_id] = author_key
-    if not author_to_native:
-        raise ValueError(f'no polymer atom_site records for target chain {label_chain}')
+    if not found or not author_to_native:
+        raise ValueError(f'no valid polymer atom_site loop for target chain {label_chain}')
     return author_to_native
 
 
