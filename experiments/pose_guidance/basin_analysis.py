@@ -239,20 +239,26 @@ def _diversity(backbones, plan):
     results = []
     for arm, items in sorted(grouped.items()):
         cdr_lengths = set(tuple(len(r['_loops'][f'cdr{i}']) for i in (1, 2, 3)) for r in items)
-        pairs, tips = [], []
+        by_loop_pairs = {f'cdr{i}': [] for i in (1, 2, 3)}
+        tips = []
         nearest = [float('inf') for _ in items]
         for i, a in enumerate(items):
             for j in range(i + 1, len(items)):
                 b = items[j]
                 dist = float(np.linalg.norm(a['_tip3'] - b['_tip3']))
                 tips.append(dist)
-                if len(a['_loops']['cdr3']) != len(b['_loops']['cdr3']):
-                    continue
-                d = rmsd(a['_placed_cdr3'], b['_placed_cdr3'])
-                pairs.append(d)
-                nearest[i], nearest[j] = min(nearest[i], d), min(nearest[j], d)
+                for name in by_loop_pairs:
+                    if len(a['_loops'][name]) != len(b['_loops'][name]):
+                        continue
+                    d = rmsd(a[f'_placed_{name}'], b[f'_placed_{name}'])
+                    by_loop_pairs[name].append(d)
+                    if name == 'cdr3':
+                        nearest[i], nearest[j] = min(nearest[i], d), min(nearest[j], d)
+        pairs = by_loop_pairs['cdr3']
         results.append({
             'arm': arm, 'generated_backbones': len(items),
+            **{f'equal_length_{name}_pair_rmsd_median_A': _median(values)
+               for name, values in by_loop_pairs.items()},
             'distinct_cdr_length_triplets': len(cdr_lengths),
             'cdr3_length_variants': len(set(x[2] for x in cdr_lengths)),
             'cdr3_tip_pair_distance_median_A': _median(tips),
@@ -293,6 +299,8 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             'designed_vhh_recovery_le3A': sum(d['best_binder_only_ca_rmsd_A'] is not None
                                                and d['best_binder_only_ca_rmsd_A'] <= 3 for d in dd),
             'best_vhh_rmsd_median_A': _median(d['best_binder_only_ca_rmsd_A'] for d in dd),
+            'best_cdr1_rmsd_median_A': _median(d['best_cdr1_framework_rmsd_A'] for d in dd),
+            'best_cdr2_rmsd_median_A': _median(d['best_cdr2_framework_rmsd_A'] for d in dd),
             'best_cdr3_rmsd_median_A': _median(d['best_cdr3_framework_rmsd_A'] for d in dd),
             'best_own_dockq_median': _median(d['max_scDockQ'] for d in dd),
             'best_iptm_median': _median(d['max_iptm'] for d in dd),
@@ -400,7 +408,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                 cdr3 = loops['cdr3']
                 nmid = min(3, len(cdr3))
                 middle = cdr3[(len(cdr3)-nmid)//2 : (len(cdr3)-nmid)//2 + nmid]
-                obs['_placed_cdr3'] = placed[cdr3]
+                for i in (1, 2, 3):
+                    name = f'cdr{i}'
+                    obs[f'_placed_{name}'] = placed[loops[name]]
                 obs['_tip3'] = placed[middle].mean(axis=0)
                 obs['_loops'] = loops
                 backbone_cache[key] = (ca.copy(), fixed, loops)
@@ -455,6 +465,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             'representative_source_relative_angle_degrees': selected['source_relative_angle_degrees'] if selected else None,
             'representative_b004_like_proxy': selected['b004_like_proxy'] if selected else False,
             'best_binder_only_ca_rmsd_A': min(r['binder_only_ca_rmsd_A'] for r in rows),
+            'best_cdr1_framework_rmsd_A': min(r['cdr1_framework_rmsd_A'] for r in rows),
+            'best_cdr2_framework_rmsd_A': min(r['cdr2_framework_rmsd_A'] for r in rows),
             'best_cdr3_framework_rmsd_A': min(r['cdr3_framework_rmsd_A'] for r in rows),
             'max_iptm': max((r['iptm'] for r in rows if r['iptm'] is not None), default=None),
         })
@@ -590,24 +602,30 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         '',
         '## CDR3 diversity',
         '',
-        '| Arm | Length triplets | Same-length CDR3 RMSD median (Å) | CDR3 tip distance median (Å) |',
-        '|---|---:|---:|---:|',
+        '| Arm | Length triplets | CDR1 RMSD | CDR2 RMSD | CDR3 RMSD | CDR3 tip distance |',
+        '|---|---:|---:|---:|---:|---:|',
     ]
     for r in diversity:
         lines.append(
             f"| {r['arm']} | {r['distinct_cdr_length_triplets']} | "
-            f"{r['equal_length_cdr3_pair_rmsd_median_A']} | {r['cdr3_tip_pair_distance_median_A']} |"
+            f"{r['equal_length_cdr1_pair_rmsd_median_A']} | "
+            f"{r['equal_length_cdr2_pair_rmsd_median_A']} | "
+            f"{r['equal_length_cdr3_pair_rmsd_median_A']} | "
+            f"{r['cdr3_tip_pair_distance_median_A']} |"
         )
     lines += [
         '', '## Fold recovery',
         '',
-        '| Arm | Median best VHH RMSD (Å) | Median best CDR3 RMSD (Å) | Designs with VHH RMSD ≤3 Å |',
-        '|---|---:|---:|---:|',
+        '| Arm | Median best VHH RMSD (Å) | CDR1 RMSD | CDR2 RMSD | CDR3 RMSD | VHH recovery ≤3 Å |',
+        '|---|---:|---:|---:|---:|---:|',
     ]
     for r in summary:
         lines.append(
             f"| {r['arm']} | {r['best_vhh_rmsd_median_A']} | "
-            f"{r['best_cdr3_rmsd_median_A']} | {r['designed_vhh_recovery_le3A']} |"
+            f"{r['best_cdr1_rmsd_median_A']} | "
+            f"{r['best_cdr2_rmsd_median_A']} | "
+            f"{r['best_cdr3_rmsd_median_A']} | "
+            f"{r['designed_vhh_recovery_le3A']} |"
         )
     lines += [
         '', '**Important:** the reference B004 screenshot reports a framework-dominated',
