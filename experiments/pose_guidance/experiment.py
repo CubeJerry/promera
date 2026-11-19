@@ -28,7 +28,7 @@ from omegaconf import OmegaConf
 from pose_geometry import (align, build_plan, digest, observed_arrays,
                            pose_metrics, read_chains, rmsd,
                            targeted_site_from_reference, native_epitope_template_ids, basin_site_from_author_ids,
-                           framework_map,
+                           template_author_to_native_ids, framework_map,
                            site_contact_metrics, cone_placement, jitter, cross_distogram)
 
 HERE = Path(__file__).resolve().parent
@@ -103,7 +103,7 @@ def parse_basin_residues(value: str) -> tuple[str, list[str]]:
 
 def basin_reference_from_npz(
     path: Path, basin_id: str, chain: str, runtime_sequence: str,
-    template_chain: dict[str, Any],
+    template_chain: dict[str, Any], author_to_native_ids: dict[str, str],
 ) -> dict[str, Any]:
     """Freeze all original basin footprints; leave official assignments untouched.
 
@@ -112,12 +112,19 @@ def basin_reference_from_npz(
     """
     from promera.inference.utils import align_schema_to_template
     template_sequence = template_chain['sequence']
-    ids = list(map(str, template_chain['residue_ids']))
+    native_ids = list(map(str, template_chain['residue_ids']))
     mapping, stats = align_schema_to_template(runtime_sequence, template_sequence)
     if float(stats['identity']) < 0.8 or float(stats['coverage']) < 0.7:
         raise ValueError('cannot map archived basin residues to runtime target')
-    by_author = {ids[ti]: int(si) + 1 for si, ti in mapping.items()
-                 if runtime_sequence[si] == template_sequence[ti] and runtime_sequence[si] != 'X'}
+    native_to_schema = {
+        native_ids[ti]: int(si) + 1 for si, ti in mapping.items()
+        if runtime_sequence[si] == template_sequence[ti] and runtime_sequence[si] != 'X'
+    }
+    by_author = {
+        author: native_to_schema[native]
+        for author, native in author_to_native_ids.items()
+        if native in native_to_schema
+    }
     with np.load(path, allow_pickle=False) as npz:
         required = ('basin_id', 'residue_chain', 'residue_author_number',
                     'basin_residue_indices_flat', 'basin_residue_offsets',
@@ -129,6 +136,14 @@ def basin_reference_from_npz(
             raise ValueError(f'original basin NPZ does not identify {basin_id} uniquely')
         original_chains = list(map(str, npz['residue_chain']))
         original_authors = list(map(str, npz['residue_author_number']))
+        if 'residue_insertion_code' in npz.files:
+            insertion = list(map(str, npz['residue_insertion_code']))
+            if len(insertion) != len(original_authors):
+                raise ValueError('inconsistent Epitope Scan author residue insertions')
+            original_authors = [
+                auth + (ins if ins not in {'', '?', '.'} else '')
+                for auth, ins in zip(original_authors, insertion)
+            ]
         def region(flat_key: str, offset_key: str, i: int) -> tuple[list[str], list[int]]:
             offsets = npz[offset_key]
             indices = npz[flat_key][int(offsets[i]):int(offsets[i + 1])]
@@ -244,8 +259,10 @@ def prepare(args: argparse.Namespace) -> None:
         template_chains = read_chains(template)
         if chain not in template_chains:
             raise ValueError(f'target template lacks basin chain {chain}')
+        author_to_native = template_author_to_native_ids(template, chain)
         plan['targeted_site'] = basin_site_from_author_ids(
             schema[chain]['sequence'], template_chains[chain], ids, chain,
+            author_to_native_ids=author_to_native,
             min_identity=float(target_template.get('min_identity', 0.8)),
             min_coverage=float(target_template.get('min_coverage', 0.7)),
         )
@@ -283,7 +300,7 @@ def prepare(args: argparse.Namespace) -> None:
             raise ValueError(f'original Epitope Scan basin archive missing: {basin_npz}')
         plan['basin_reference'] = basin_reference_from_npz(
             basin_npz, args.basin_id, chain, schema[chain]['sequence'],
-            template_chains[chain],
+            template_chains[chain], author_to_native,
         )
         if not set(ids).issubset(set(plan['basin_reference']['selected_basin_author_ids'])):
             raise ValueError('B004 recommended target residues are outside its archived footprint')
