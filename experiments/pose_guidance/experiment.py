@@ -28,6 +28,7 @@ from omegaconf import OmegaConf
 from pose_geometry import (align, build_plan, digest, observed_arrays,
                            pose_metrics, read_chains, rmsd,
                            targeted_site_from_reference, native_epitope_template_ids, basin_site_from_author_ids,
+                           framework_map,
                            site_contact_metrics, cone_placement, jitter, cross_distogram)
 
 HERE = Path(__file__).resolve().parent
@@ -248,6 +249,35 @@ def prepare(args: argparse.Namespace) -> None:
             min_identity=float(target_template.get('min_identity', 0.8)),
             min_coverage=float(target_template.get('min_coverage', 0.7)),
         )
+        # The broad historical basin target need not overlap the selected
+        # CDR-driven source pose. Measure that conflict before spending GPU time.
+        _, source_cdr_ordinals = framework_map(
+            source_chains[guide_binder]['sequence'], cfg['binder']['framework']
+        )
+        source_cdr_ca = np.asarray(
+            source_chains[guide_binder]['coords'], dtype=float
+        )[source_cdr_ordinals]
+        target_label_to_index = {
+            (str(name), int(ordinal)): i
+            for i, (name, ordinal) in enumerate(plan['target_labels'])
+        }
+        source_site_distances = {}
+        for author_id, schema_pos in zip(
+            ids, plan['targeted_site']['schema_positions_1_based']
+        ):
+            target_index = target_label_to_index[(chain, int(schema_pos) - 1)]
+            target_ca = np.asarray(plan['target_coords'][target_index], dtype=float)
+            nearest = float(np.linalg.norm(source_cdr_ca - target_ca, axis=1).min())
+            source_site_distances[f'{chain}:{author_id}'] = nearest
+        plan['targeted_site']['source_pose_nearest_CDR_CA_distance_angstrom'] = source_site_distances
+        if any(distance > 10 for distance in source_site_distances.values()):
+            print(
+                'WARNING: the selected reference CDRs are >10 A from one or more '
+                'recommended basin target residues: '
+                + json.dumps(source_site_distances, sort_keys=True)
+                + '. Native target-site and pose-distance guidance may compete.',
+                flush=True,
+            )
         basin_npz = resolve(str(args.basin_npz), base_path.parent)
         if not basin_npz.is_file():
             raise ValueError(f'original Epitope Scan basin archive missing: {basin_npz}')
