@@ -17,18 +17,58 @@ import basin_analysis as ba
 def test_author_residue_mapping_rejects_wrong_positions():
     target = 'ACDE'
     template = {'sequence': 'XACDEY',
-                'residue_ids': ['101', '339', '340', '343', '344', '345']}
+                'residue_ids': ['101', '270', '271', '272', '273', '274']}
+    author_map = {'339': '270', '343': '272', '345': '274'}
     aligner = lambda a,b: ({0:1,1:2,2:3,3:4}, {'identity':1.0,'coverage':1.0})
     site = geom.basin_site_from_author_ids(
-        target, template, ['339', '343'], 'A', aligner=aligner,
+        target, template, ['339', '343'], 'A',
+        author_to_native_ids=author_map, aligner=aligner,
     )
     assert site['schema_positions_1_based'] == [1,3]
-    assert site['native_epitope_residue_ids'] == ['339','343']
+    assert site['native_epitope_residue_ids'] == ['270','272']
+    assert site['epitope_scan_author_residue_ids'] == ['339','343']
     assert site['selection_policy'] == 'epitope_scan_basin_recommended_author_residues'
     with pytest.raises(ValueError, match='absent'):
-        geom.basin_site_from_author_ids(target,template,['345'],'A',aligner=aligner)
+        geom.basin_site_from_author_ids(
+            target, template, ['345'],'A', author_to_native_ids=author_map,
+            aligner=aligner)
     with pytest.raises(ValueError, match='distinct'):
-        geom.basin_site_from_author_ids(target,template,['339','339'],'A',aligner=aligner)
+        geom.basin_site_from_author_ids(
+            target,template,['339','339'],'A',author_to_native_ids=author_map,
+            aligner=aligner)
+
+
+
+
+def test_real_mmcif_author_and_native_numbering_are_distinct(tmp_path):
+    # Synthetic mmCIF uses the same author→label offset as the 8VWP template:
+    # auth A:339/A:343 -> label_seq_id 272/276, NOT native 339/343.
+    text = """data_test
+#
+loop_
+_atom_site.group_PDB
+_atom_site.label_asym_id
+_atom_site.auth_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+ATOM A A 272 339 ? 1 C CA LEU 1.0 2.0 3.0
+ATOM A A 276 343 ? 2 C CA VAL 4.0 5.0 6.0
+#
+"""
+    cif = tmp_path/'author-label.cif'
+    cif.write_text(text)
+    result = geom.template_author_to_native_ids(cif, 'A')
+    assert result['339'] == '272'
+    assert result['343'] == '276'
+    assert result['339'] != '339'
 
 
 def test_basin_author_parser():
@@ -90,13 +130,16 @@ def test_basin_signature_preserves_full_historical_footprints(tmp_path, monkeypa
     for name in ['promera', 'promera.inference']:
         monkeypatch.setitem(sys.modules,name,types.ModuleType(name))
     monkeypatch.setitem(sys.modules,'promera.inference.utils',module)
-    template = {'sequence':'ACDEF', 'residue_ids':['100','101','339','343','345']}
-    signature = experiment.basin_reference_from_npz(path,'B004','A','ACDEF',template)
+    template = {'sequence':'ACDEF', 'residue_ids':['900','901','270','272','273']}
+    author_map = {'100':'900','101':'901','339':'270','343':'272','345':'273'}
+    signature = experiment.basin_reference_from_npz(
+        path,'B004','A','ACDEF',template,author_map)
     assert signature['regions']['B004']['footprint_schema_positions'] == [3,4,5]
     assert signature['regions']['B004']['core_schema_positions'] == [3,4]
     assert signature['regions']['B003']['footprint_schema_positions'] == [1,2]
     with pytest.raises(ValueError, match='B008'):
-        experiment.basin_reference_from_npz(path,'B008','A','ACDEF',template)
+        experiment.basin_reference_from_npz(
+            path,'B008','A','ACDEF',template,author_map)
 
 
 def test_cpu_analysis_submission_uses_afterok():
