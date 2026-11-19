@@ -560,6 +560,70 @@ def native_epitope_template_ids(
 
 
 
+
+def basin_site_from_author_ids(
+    target_sequence: str, template_chain: dict[str, Any],
+    author_residue_ids: list[str], chain: str, *,
+    min_identity: float = 0.8, min_coverage: float = 0.7,
+    aligner: Any | None = None,
+) -> dict[str, Any]:
+    """Resolve explicit Epitope Scan author IDs into native Promera schema positions.
+
+    Never confuse author IDs (e.g. A:339) with cropped runtime ordinals.
+    Apply Promera's semi-global mapping and verify each amino acid exactly.
+    """
+    if not author_residue_ids or len(set(author_residue_ids)) != len(author_residue_ids):
+        raise ValueError('basin target residues must be distinct, nonempty author IDs')
+    template_seq = str(template_chain['sequence'])
+    ids = [str(x) for x in template_chain['residue_ids']]
+    if len(ids) != len(template_seq) or len(set(ids)) != len(ids):
+        raise ValueError('ambiguous or incomplete target-template residue identifiers')
+    if aligner is None:
+        from promera.inference.utils import align_schema_to_template
+        aligner = align_schema_to_template
+    mapping, stats = aligner(target_sequence, template_seq)
+    if (float(stats['identity']) < min_identity or float(stats['coverage']) < min_coverage
+            or not np.isfinite([stats['identity'], stats['coverage']]).all()
+            or len(set(mapping.values())) != len(mapping)):
+        raise ValueError('B004 target-template alignment failed identity/coverage/uniqueness checks')
+    inverse = {j: i for i, j in mapping.items()}
+    template_by_author = {rid: i for i, rid in enumerate(ids)}
+    positions = []
+    for rid in author_residue_ids:
+        if rid not in template_by_author:
+            raise ValueError(f'Epitope Scan target {chain}:{rid} not found in target template')
+        ti = template_by_author[rid]
+        si = inverse.get(ti)
+        if si is None or target_sequence[si] != template_seq[ti] or target_sequence[si] == 'X':
+            raise ValueError(f'Epitope Scan target {chain}:{rid} is absent or changed in runtime target')
+        positions.append(si + 1)
+    if len(set(positions)) != len(positions):
+        raise ValueError('B004 author residues map to duplicate schema positions')
+    site = {
+        'chain': chain,
+        'schema_positions_1_based': positions,
+        'native_epitope_residue_ids': list(author_residue_ids),
+        'native_epitope_numbering': 'target_template_residue_ids',
+        'native_template_chain': chain,
+        'source_cdr_ca_cutoff_angstrom': 10.0,
+        'source_target_residue_count': len(positions),
+        'selection_policy': 'epitope_scan_basin_recommended_author_residues',
+        'residue_numbering': '1-based runtime schema ordinals mapped from template author IDs',
+        'template_alignment': {
+            'method': 'promera.inference.utils.align_schema_to_template',
+            'identity': float(stats['identity']), 'coverage': float(stats['coverage']),
+            'runtime_length': len(target_sequence), 'template_length': len(template_seq),
+            'schema_to_template_residue_ids': {str(p): r for p, r in zip(positions, author_residue_ids)},
+        },
+    }
+    if native_epitope_template_ids(
+        site, target_sequence, template_chain,
+        min_identity=min_identity, min_coverage=min_coverage, aligner=aligner,
+    ) != author_residue_ids:
+        raise ValueError('inverse B004 author-to-schema mapping failed round-trip validation')
+    return site
+
+
 def site_contact_metrics(chains: dict[str, Any], plan: dict[str, Any]) -> dict[str, float | int | None]:
     """Observed CDR/antigen contacts to the *shared* source-defined site.
 
