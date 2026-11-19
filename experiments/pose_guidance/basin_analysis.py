@@ -296,6 +296,29 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
             'jobs_completed': sum(x['status']=='completed' for x in totals if x['arm']==arm),
             'jobs_requested': sum(1 for x in totals if x['arm']==arm),
         })
+    for row in result:
+        n, nd = row['generated_backbones'], row['designed_sequences']
+        row['source_neighbourhood_fraction'] = (
+            row['backbone_in_source_neighbourhood'] / n if n else None)
+        row['cdr_driven_fraction'] = (
+            row['backbone_cdr_driven'] / n if n else None)
+        row['b004_like_proxy_fraction'] = (
+            row['backbone_b004_like_proxy'] / n if n else None)
+        row['strict_scDockQ_fraction_per_design'] = (
+            row['accepted_scDockQ_gt_023_provisional'] / nd if nd else None)
+    target = next((r for r in result if r['arm']=='targeted'), None)
+    for row in result:
+        if target is None:
+            row['b004_like_enrichment_vs_targeted'] = None
+            row['b004_like_absolute_gain_percentage_points'] = None
+            continue
+        current, baseline = (
+            row['b004_like_proxy_fraction'], target['b004_like_proxy_fraction'])
+        row['b004_like_enrichment_vs_targeted'] = (
+            current / baseline if current is not None and baseline else None)
+        row['b004_like_absolute_gain_percentage_points'] = (
+            (current-baseline)*100
+            if current is not None and baseline is not None else None)
     return result
 
 
@@ -508,7 +531,29 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             f"{r['backbone_cdr_driven']} | {r['backbone_b004_like_proxy']} | "
             f"{r['accepted_scDockQ_gt_023_provisional']} | {r['accepted_b004_like_proxy']} |"
         )
-    lines += ['', '## Independent replicate counts', '',
+    lines += ['', '## Enrichment relative to native B004 targeting', '',
+        '| Arm | CDR-driven backbones | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
+        '|---|---:|---:|---:|---:|']
+    def display_fraction(value):
+        return f"{value*100:.1f}%" if value is not None else 'n/a'
+    for r in summary:
+        ratio = r['b004_like_enrichment_vs_targeted']
+        lines.append(
+            f"| {r['arm']} | "
+            f"{display_fraction(r['cdr_driven_fraction'])} | "
+            f"{display_fraction(r['b004_like_proxy_fraction'])} | "
+            f"{ratio:.2f}×" if False else
+            f"| {r['arm']} | {display_fraction(r['cdr_driven_fraction'])} | "
+            f"{display_fraction(r['b004_like_proxy_fraction'])} | "
+            f"{f'{ratio:.2f}x' if ratio is not None else 'undefined (zero baseline)'} | "
+            f"{display_fraction(r['strict_scDockQ_fraction_per_design'])} |"
+        )
+    lines += [
+        '',
+        'The B004-like proxy is a descriptive composite, not a new official basin assignment.',
+        'A zero targeted-control rate makes fold enrichment undefined, even if a guided arm produces hits.',
+        '',
+        '## Independent replicate counts', '' ,
         '| Arm | Replicate | CDR-driven backbones | B004-like proxy backbones | Provisional accepted sequences |',
         '|---|---:|---:|---:|---:|']
     for r in by_replicate:
