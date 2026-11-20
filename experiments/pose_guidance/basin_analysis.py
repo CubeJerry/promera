@@ -335,6 +335,66 @@ def _aggregate(observations, designs, backbone_records, diversity, totals, manif
     return result
 
 
+def _angular_audit(backbones: list[dict], manifest: dict) -> list[dict]:
+    """Per-replicate verification of requested and observed 0–20° cone spread."""
+    lower, upper = map(float, manifest['angle_range_requested_degrees'])
+    edges = np.linspace(lower, upper, 5)
+    results = []
+    for job in manifest['jobs']:
+        arm, rep = job['arm'], int(job['replicate'])
+        rows = [x for x in backbones if x['arm'] == arm and x['replicate'] == rep]
+        angles = [float(x['source_relative_angle_degrees']) for x in rows]
+        guides = [float(x['guide_approach_deviation_degrees'])
+                  for x in rows if x.get('guide_approach_deviation_degrees') is not None]
+        def buckets(values):
+            counts = [0] * 5
+            for value in values:
+                cell = 4 if value > upper else min(3, max(0, int(np.searchsorted(edges, value, side='left') - 1)))
+                counts[cell] += 1
+            return counts
+        actual = buckets(angles)
+        expected = buckets(guides)
+        measured_azimuths = [
+            float(x['source_relative_azimuth_degrees'])
+            for x in rows if x.get('source_relative_azimuth_degrees') is not None
+        ]
+        quadrants = [sum(int(a // 90) == k for a in measured_azimuths) for k in range(4)]
+        correlation = None
+        tracking = []
+        if len(guides) == len(angles) and len(guides) >= 2:
+            if float(np.std(guides)) > 1e-10 and float(np.std(angles)) > 1e-10:
+                correlation = float(np.corrcoef(guides, angles)[0, 1])
+            for x in rows:
+                g_theta, o_theta = x.get('guide_approach_deviation_degrees'), x.get('source_relative_angle_degrees')
+                g_phi, o_phi = x.get('guide_azimuth_degrees'), x.get('source_relative_azimuth_degrees')
+                if None in (g_theta, o_theta, g_phi, o_phi):
+                    continue
+                t1, t2, dp = map(np.deg2rad, (float(g_theta), float(o_theta), float(g_phi) - float(o_phi)))
+                cosine = np.cos(t1) * np.cos(t2) + np.sin(t1) * np.sin(t2) * np.cos(dp)
+                tracking.append(float(np.rad2deg(np.arccos(np.clip(cosine, -1, 1)))))
+        result = {
+            'arm':arm, 'replicate':rep, 'backbones':len(rows),
+            'requested_angles':len(guides), 'requested_angle_min_degrees':min(guides) if guides else None,
+            'requested_angle_max_degrees':max(guides) if guides else None,
+            'requested_angle_median_degrees':_median(guides),
+            'measured_angle_min_degrees':min(angles) if angles else None,
+            'measured_angle_max_degrees':max(angles) if angles else None,
+            'measured_angle_median_degrees':_median(angles),
+            'measured_angle_p10_degrees':float(np.percentile(angles,10)) if angles else None,
+            'measured_angle_p90_degrees':float(np.percentile(angles,90)) if angles else None,
+            'requested_vs_measured_angle_r':correlation,
+            'guide_tracking_error_median_degrees':_median(tracking),
+            'measured_azimuth_quadrants_covered':sum(bool(n) for n in quadrants),
+        }
+        for k in range(4):
+            result[f'requested_angle_bin{k+1}'] = expected[k]
+            result[f'measured_angle_bin{k+1}'] = actual[k]
+            result[f'measured_azimuth_quadrant{k+1}'] = quadrants[k]
+        result['measured_angle_beyond_max'] = actual[4]
+        results.append(result)
+    return results
+
+
 def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                   plan: dict, manifest: dict) -> None:
     """Read structures once per stage and write interpretable, lightweight outputs."""
@@ -375,6 +435,20 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                 'arm': arm, 'replicate': rep, 'sample_index': sample,
                 'kind': kind, 'cif': str(path),
                 'source_relative_angle_degrees': source_relative,
+                'source_relative_azimuth_degrees': (
+                    float(entry['approach_azimuth_degrees'])
+                    if entry.get('approach_azimuth_degrees') not in ('', None) else None
+                ),
+                'guide_approach_deviation_degrees': (
+                    float(entry['guide_approach_deviation_degrees'])
+                    if entry.get('guide_approach_deviation_degrees') not in ('', None) else None
+                ),
+                'guide_azimuth_degrees': (
+                    float(entry['guide_azimuth_degrees'])
+                    if entry.get('guide_azimuth_degrees') not in ('', None) else None
+                ),
+                'guide_sampling_policy': entry.get('guide_sampling_policy'),
+                'guided_gate_bypass': bool(entry.get('guided_gate_bypass')),
                 'source_framework_rmsd_A': float(entry['source_framework_rmsd']),
                 'epitope_scan_approach_angle_degrees': contact['epitope_scan_approach_angle_degrees'],
                 'delta_epitope_scan_angle_from_source_degrees': (
@@ -403,6 +477,20 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             }
             key = (arm, rep, sample)
             if kind == 'backbone':
+                confidence_path = path.with_name('backbone_confidence.json')
+                if not confidence_path.is_file():
+                    raise ValueError('generated backbone lacks native viability diagnostics')
+                confidence = json.loads(confidence_path.read_text())
+                gate = confidence.get('targeted_backbone_viability')
+                if not isinstance(gate, dict):
+                    raise ValueError('generated backbone lacks native targeted gate result')
+                obs['target_gate_status'] = str(gate.get('status', 'unknown'))
+                obs['target_gate_reason'] = str(gate.get('reason', 'unknown'))
+                obs['native_target_gate_status'] = str(gate.get('native_status', gate.get('status', 'unknown')))
+                obs['native_target_gate_reason'] = str(gate.get('native_reason', gate.get('reason', 'unknown')))
+                if (manifest.get('guided_gate_bypass') and arm != 'targeted'
+                        and obs['target_gate_status'] == 'reject'):
+                    raise ValueError('guided target-gate bypass failed: native rejection still active')
                 rot, shift = align(ca[fixed], np.asarray(plan['source_framework_coords']))
                 placed = ca @ rot + shift
                 cdr3 = loops['cdr3']
@@ -471,6 +559,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             'max_iptm': max((r['iptm'] for r in rows if r['iptm'] is not None), default=None),
         })
     diversity = _diversity(backbones, plan)
+    angular = _angular_audit(backbones, manifest)
     summary = _aggregate(observations, designs, backbones, diversity, totals, manifest)
     # Independent SLURM replicates, not five refolds or pairwise RMSDs,
     # define the between-condition experimental repeat.
@@ -502,6 +591,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     _save_csv(output / 'per_structure.csv', [_values(x) for x in observations], obs_columns)
     _save_csv(output / 'per_sequence.csv', designs, list(designs[0]) if designs else [])
     _save_csv(output / 'by_replicate.csv', by_replicate, list(by_replicate[0]) if by_replicate else [])
+    _save_csv(output / 'angular_sampling.csv', angular, list(angular[0]) if angular else [])
     _save_csv(output / 'diversity.csv', diversity, list(diversity[0]) if diversity else [])
     _save_csv(output / 'summary.csv', summary, list(summary[0]) if summary else [])
     (output / 'errors.json').write_text(json.dumps(errors, indent=2)+'\n')
@@ -532,6 +622,11 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         ),
         'summary': summary,
         'by_replicate': by_replicate,
+        'angular_sampling': angular,
+        'native_target_gate_status_counts': {
+            arm: dict(Counter(x['native_target_gate_status'] for x in backbones if x['arm']==arm))
+            for arm in sorted(set(x['arm'] for x in backbones))
+        },
         'diversity': diversity,
     }
     (output / 'summary.json').write_text(json.dumps(metrics, indent=2, allow_nan=False)+'\n')
@@ -556,7 +651,49 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             f"{r['backbone_cdr_driven']} | {r['backbone_b004_like_proxy']} | "
             f"{r['accepted_scDockQ_gt_023_provisional']} | {r['accepted_b004_like_proxy']} |"
         )
-    lines += ['', '## Enrichment relative to native B004 targeting', '',
+    lines += ['', '## Source-relative angular sampling', '',
+        'The cone uses independent equal-solid-angle and azimuth strata per replicate;',
+        'these are soft generation inputs, so observed orientations may deviate from their targets.',
+        'Angle bands are 0–5, 5–10, 10–15 and 15–20° for this requested 0–20° run.',
+        '',
+        '| Arm | Rep | Guide min–max | Observed median | Observed 0–5 / 5–10 / 10–15 / 15–20 / >20 | Observed azimuth quadrants |',
+        '|---|---:|---:|---:|---:|---:|']
+    for a in angular:
+        guides = (
+            f"{a['requested_angle_min_degrees']:.1f}–{a['requested_angle_max_degrees']:.1f}°"
+            if a['requested_angles'] else 'none'
+        )
+        counts = ' / '.join(str(a[f'measured_angle_bin{k}']) for k in range(1,5))
+        counts += ' / ' + str(a['measured_angle_beyond_max'])
+        lines.append(
+            f"| {a['arm']} | {a['replicate']} | {guides} | "
+            f"{a['measured_angle_median_degrees']:.1f}° | "
+            f"{counts} | {a['measured_azimuth_quadrants_covered']}/4 |"
+        )
+    lines += [
+        '',
+        'The observed-azimuth values describe the whole VHH approach axis relative to',
+        'the source axis after antigen alignment. Framework-aligned CDR RMSDs below',
+        'describe loop-shape diversity, a different quantity.',
+        '',
+        '## Native target-gate audit', '',
+        '| Arm | Native passing | Native rejecting | Recorded bypasses | Designed sequences |',
+        '|---|---:|---:|---:|---:|']
+    for r in summary:
+        bb = [x for x in backbones if x['arm'] == r['arm']]
+        lines.append(
+            f"| {r['arm']} | {sum(x['native_target_gate_status']=='pass' for x in bb)} | "
+            f"{sum(x['native_target_gate_status']=='reject' for x in bb)} | "
+            f"{sum(x['target_gate_status']=='bypassed' for x in bb)} | "
+            f"{r['designed_sequences']} |"
+        )
+    lines += [
+        '',
+        'In the guided arms, *bypassed* means the native gate would have rejected',
+        'a backbone, but this experiment permitted inverse folding to continue.',
+        'The native targeted-only control is unchanged.',
+        '',
+        '## Enrichment relative to native B004 targeting', '',
         '| Arm | Primarily CDR contacts | Pose Atlas CDR-driven | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
         '|---|---:|---:|---:|---:|---:|']
     def display_fraction(value):
@@ -638,7 +775,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     files = [
         output / name for name in ('RESULTS.md', 'summary.csv', 'summary.json',
                                   'per_structure.csv', 'per_sequence.csv',
-                                  'by_replicate.csv', 'diversity.csv', 'errors.json')
+                                  'by_replicate.csv', 'angular_sampling.csv',
+                                  'diversity.csv', 'errors.json')
     ]
     files += [root/'manifest.json', root/'plan.json', root/'source_atlas_selection.json']
     archive = output / 'basin-analysis.zip'
