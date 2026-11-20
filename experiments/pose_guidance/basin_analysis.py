@@ -448,7 +448,7 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                     if entry.get('guide_azimuth_degrees') not in ('', None) else None
                 ),
                 'guide_sampling_policy': entry.get('guide_sampling_policy'),
-                'guided_gate_bypass': bool(entry.get('guided_gate_bypass')),
+                'guided_gate_bypass': str(entry.get('guided_gate_bypass')).lower() == 'true',
                 'source_framework_rmsd_A': float(entry['source_framework_rmsd']),
                 'epitope_scan_approach_angle_degrees': contact['epitope_scan_approach_angle_degrees'],
                 'delta_epitope_scan_angle_from_source_degrees': (
