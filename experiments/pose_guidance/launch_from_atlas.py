@@ -254,6 +254,8 @@ def launch(args: argparse.Namespace) -> None:
             prepare_command.append("--bypass-guided-target-gate")
         if getattr(args, "pose_only_guides", False):
             prepare_command.append("--pose-only-guides")
+        if getattr(args, "diagnostic_targeted_cone", False):
+            prepare_command.append("--diagnostic-targeted-cone")
     if profile == "comparison":
         prepare_command.extend([
             "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0)),
@@ -275,6 +277,9 @@ def launch(args: argparse.Namespace) -> None:
         "stratified_cone": bool(getattr(args, "stratified_cone", False)) if profile == "basin" else False,
         "guided_gate_bypass": bool(getattr(args, "bypass_guided_target_gate", False)) if profile == "basin" else False,
         "pose_only_guides": bool(getattr(args, "pose_only_guides", False)) if profile == "basin" else False,
+        "diagnostic_targeted_cone": bool(
+            getattr(args, "diagnostic_targeted_cone", False)
+        ) if profile == "basin" else False,
         "epitope_scan_basin_archive": str(basin_npz) if profile == "basin" else None,
         "epitope_scan_basin_archive_sha256": _sha256(basin_npz) if profile == "basin" else None,
     }, indent=2) + "\n")
@@ -355,6 +360,8 @@ def main() -> int:
                         help="continue inverse folding for guided arms despite native target-gate rejection")
     parser.add_argument("--pose-only-guides", action="store_true",
                         help="native B004 targeting for targeted control; no native targeting for anchors16/cone16")
+    parser.add_argument("--diagnostic-targeted-cone", action="store_true",
+                        help="add a matched native-targeted cone16 arm to test hotspot/pose conditioning interference")
     parser.add_argument("--basin-residues", default="A:339,A:343",
                         help="Native target-template author IDs; B004 recommendations")
     parser.add_argument("--site-cutoff-angstrom", type=float, default=10.0,
