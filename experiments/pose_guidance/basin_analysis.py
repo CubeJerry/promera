@@ -476,21 +476,39 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                 'sequence': entry.get('sequence', '') if kind=='refold' else '',
             }
             key = (arm, rep, sample)
+            obs['native_epitope_targeting_enabled'] = bool(
+                manifest.get('arm_conditioning', {}).get(arm, {}).get(
+                    'native_epitope_targeting', True))
             if kind == 'backbone':
                 confidence_path = path.with_name('backbone_confidence.json')
                 if not confidence_path.is_file():
                     raise ValueError('generated backbone lacks native viability diagnostics')
                 confidence = json.loads(confidence_path.read_text())
                 gate = confidence.get('targeted_backbone_viability')
-                if not isinstance(gate, dict):
-                    raise ValueError('generated backbone lacks native targeted gate result')
-                obs['target_gate_status'] = str(gate.get('status', 'unknown'))
-                obs['target_gate_reason'] = str(gate.get('reason', 'unknown'))
-                obs['native_target_gate_status'] = str(gate.get('native_status', gate.get('status', 'unknown')))
-                obs['native_target_gate_reason'] = str(gate.get('native_reason', gate.get('reason', 'unknown')))
-                if (manifest.get('guided_gate_bypass') and arm != 'targeted'
-                        and obs['target_gate_status'] == 'reject'):
-                    raise ValueError('guided target-gate bypass failed: native rejection still active')
+                native_targeting = obs['native_epitope_targeting_enabled']
+                if not native_targeting:
+                    if gate is not None:
+                        raise ValueError(
+                            'pose-only arm unexpectedly triggered native targeted gate'
+                        )
+                    obs['target_gate_status'] = 'not_applicable'
+                    obs['target_gate_reason'] = 'no_native_epitope_targeting'
+                    obs['native_target_gate_status'] = 'not_applicable'
+                    obs['native_target_gate_reason'] = 'no_native_epitope_targeting'
+                else:
+                    if not isinstance(gate, dict):
+                        raise ValueError('targeted backbone lacks native targeted gate result')
+                    obs['target_gate_status'] = str(gate.get('status', 'unknown'))
+                    obs['target_gate_reason'] = str(gate.get('reason', 'unknown'))
+                    obs['native_target_gate_status'] = str(
+                        gate.get('native_status', gate.get('status', 'unknown'))
+                    )
+                    obs['native_target_gate_reason'] = str(
+                        gate.get('native_reason', gate.get('reason', 'unknown'))
+                    )
+                    if (manifest.get('guided_gate_bypass') and arm != 'targeted'
+                            and obs['target_gate_status'] == 'reject'):
+                        raise ValueError('guided target-gate bypass failed: native rejection still active')
                 rot, shift = align(ca[fixed], np.asarray(plan['source_framework_coords']))
                 placed = ca @ rot + shift
                 cdr3 = loops['cdr3']
@@ -597,6 +615,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     (output / 'errors.json').write_text(json.dumps(errors, indent=2)+'\n')
     metrics = {
         'profile': 'basin', 'basin_id': manifest['basin_id'],
+        'arm_conditioning': manifest.get('arm_conditioning', {}),
+        'pose_only_guides': bool(manifest.get('pose_only_guides', False)),
         'source_backbone_epitope_scan_approach_angle_degrees': source_angle,
         'source_backbone_epitope_scan_CDR_fraction': source_contacts['cdr_contact_fraction'],
         'source_backbone_epitope_scan_class': source_contacts['epitope_scan_class'],
@@ -639,6 +659,12 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         'Native Promera template label IDs: ' + ', '.join(
             plan['targeted_site']['chain'] + ':' + x for x in metrics['site_native_template_ids']),
         'Source pose: B004__G047__5_389; angular guidance: 0–20° relative to this pose.',
+        'Native epitope targeting by condition: ' + ', '.join(
+            arm + '=' + ('on' if spec['native_epitope_targeting'] else 'off')
+            for arm, spec in manifest.get('arm_conditioning', {}).items()
+        ),
+        'In pose-only arms, the archived B004 target residues remain descriptive '
+        'analysis references, not generation constraints.',
         'Measured source BACKBONE Epitope Scan-style approach angle: '
           + str(source_angle) + '°; class: ' + source_contacts['epitope_scan_class']
           + ' (Atlas display may report the selected REFOLD angle instead).',
@@ -693,9 +719,11 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         )
     lines += [
         '',
-        'In the guided arms, *bypassed* means the native gate would have rejected',
-        'a backbone, but this experiment permitted inverse folding to continue.',
-        'The native targeted-only control is unchanged.',
+        'The targeted-only control uses ordinary native epitope conditioning and its gate.',
+        'In pose-only arms, *not_applicable* means no native epitope residue was supplied,',
+        'so the targeted gate was not invoked. This is not an override of a rejection.',
+        'In an alternative gate-bypass run, *bypassed* retains the original rejection',
+        'reason while allowing further computation.',
         '',
         '## Enrichment relative to native B004 targeting', '',
         '| Arm | Primarily CDR contacts | Pose Atlas CDR-driven | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
@@ -728,7 +756,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         '',
         '## What each measure can establish',
         '',
-        '- The B004-like *proxy* combines source-relative orientation, CDR-driven classification,',
+        '- Pose-only versus native-targeted compares two different generation conditions.',
+        '  Do not interpret this as a same-epitope incremental effect.',
+        '- The B004-like *proxy* combines source-relative orientation, CDR-driven classification,
         '  contact with ≥1 recommended target residue through CDRs, and maximal archived',
         '  basin-footprint Jaccard similarity. No 100% target-residue coverage is required.',
         '- CDR-driven backbone rates and accepted/refold CDR-driven rates are separate.',
