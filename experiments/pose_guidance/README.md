@@ -4,6 +4,60 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## B004 repeat: native-gate audit and stratified angular cone
+
+The first B004 comparison generated 192 backbones per arm, but all 384
+pose-guided backbones were rejected by the native targeted-backbone gate
+(`no_epitope_contacts`) *before* Boltz-IF. The source pose does not overlap
+the independent B004 A:339/A:343 hotspot pair. This repeat keeps the
+completed experiment and the production NOMINEE image untouched.
+
+- `--bypass-guided-target-gate` evaluates the native gate as usual but
+  records a rejection as `bypassed` and retains `native_reason` in
+  `backbone_confidence.json` for the two guided arms only. The
+  `targeted` control is unchanged. Boltz-IF and five unrestrained
+  refolds per produced sequence are unchanged.
+- `--stratified-cone` covers the requested 0–20 degree cone using one
+  equal-solid-angle polar stratum and one azimuth stratum per backbone
+  per replicate. This changes the guide distribution, not the model
+  weights or diffusion dynamics. The model is still free to deviate.
+- The automatic `afterok` CPU analysis now reports actual versus
+  requested angle and azimuth, 5-degree bins, 90-degree quadrants,
+  native gate decisions, CDR1/2/3 diversity, VHH fold recovery and
+  docking recovery. See `analysis/basin/angular_sampling.csv` and
+  `analysis/basin/RESULTS.md`.
+
+Launch from a **fresh worktree** (the parent Git checkout may use a
+restricted fetch refspec; fetch the exact branch):
+
+```bash
+set -e
+SOURCE=/vast/home/users/chen.je/promera-pose-guidance
+NEW=/vast/home/users/chen.je/promera-b004-repeat
+git -C "$SOURCE" fetch https://github.com/CubeJerry/promera.git \
+  refs/heads/feature/b004-gate-audit-cone-repeat:refs/remotes/origin/feature/b004-gate-audit-cone-repeat
+git -C "$SOURCE" worktree add --detach "$NEW" origin/feature/b004-gate-audit-cone-repeat
+module load apptainer
+python3 "$NEW/experiments/pose_guidance/launch_from_atlas.py" \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 --profile basin --basin-id B004 \
+  --basin-residues A:339,A:343 --angle-range 0:20 \
+  --backbones 64 --replicates 3 \
+  --stratified-cone --bypass-guided-target-gate
+```
+
+The fresh timestamped experiment is placed under
+`/vast/scratch/users/chen.je/sandbox/pose-guidance-work/`.
+Nine GPU array tasks (one A30 at a time) are followed by one CPU-only
+analysis job. Up to 576 backbones and 2,880 unrestrained refold
+predictions are requested; actual numbers depend on inverse folding.
+Upload only `analysis/basin/basin-analysis.zip` after completion.
+
+**Interpretation:** a more even *requested* cone is not a guarantee of
+more diverse *observed* orientations. The report measures both.
+Bypassing this site gate allows a fold-recovery test; it does not make
+the out-of-site guided poses credible binders to A:339/A:343.
+
 ## B004 basin-targeted comparison (new experiment)
 
 This profile tests native Promera epitope targeting against two variants
