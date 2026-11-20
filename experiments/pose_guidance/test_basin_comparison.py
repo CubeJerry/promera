@@ -171,6 +171,7 @@ def test_basin_launcher_schedules_cpu_analysis_after_whole_array(tmp_path, monke
         basin_id='B004', basin_residues='A:339,A:343',
         nominee_config=str(site), work=str(tmp_path/'work'),
         backbones=4, replicates=2, dry_run=False, no_submit=False,
+        stratified_cone=True, bypass_guided_target_gate=True,
     )
     invoked = []
     def fake_run(argv, **kwargs):
@@ -178,6 +179,8 @@ def test_basin_launcher_schedules_cpu_analysis_after_whole_array(tmp_path, monke
         if 'prepare' in argv:
             assert argv[argv.index('--basin-npz')+1] == str(old_basin)
             assert argv[argv.index('--basin-residues')+1] == 'A:339,A:343'
+            assert '--stratified-cone' in argv
+            assert '--bypass-guided-target-gate' in argv
             root = Path(argv[argv.index('--out')+1])
             root.mkdir(parents=True, exist_ok=True)
             jobs = [{'index':i,'arm':arm,'replicate':rep,'requested_backbones':4}

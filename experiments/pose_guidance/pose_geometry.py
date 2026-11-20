@@ -99,6 +99,35 @@ def jitter(coords: Any, seed: int, degrees: float, translation: float) -> np.nda
     return (arr - arr.mean(0)) @ rotation.T + arr.mean(0) + shift
 
 
+def stratified_cone_angles(
+    backbone_index: int, count: int, replicate_seed: int,
+    min_degrees: float, max_degrees: float,
+) -> tuple[float, float, int, int]:
+    """Sample reproducibly over the whole cone, not a lucky cluster of draws.
+
+    Independently permute equal-solid-angle polar and equal-azimuth strata
+    across the planned backbones within each replicate. The marginals retain
+    the original uniform-in-solid-angle policy, while a full 64-backbone
+    replicate necessarily explores the available radial and azimuth intervals.
+    """
+    if count < 1 or not 0 <= backbone_index < count:
+        raise ValueError('cone stratum index is outside requested backbone count')
+    if not (np.isfinite([min_degrees, max_degrees]).all()
+            and 0 <= min_degrees <= max_degrees <= 180):
+        raise ValueError('invalid stratified cone angle interval')
+    rng = np.random.default_rng(int(replicate_seed))
+    polar = rng.permutation(count)
+    azimuth = rng.permutation(count)
+    polar_quantile = (int(polar[backbone_index]) + float(rng.random(count)[backbone_index])) / count
+    azimuth_quantile = (int(azimuth[backbone_index]) + float(rng.random(count)[backbone_index])) / count
+    c_low = float(np.cos(np.deg2rad(min_degrees)))
+    c_high = float(np.cos(np.deg2rad(max_degrees)))
+    angle = float(np.rad2deg(np.arccos(np.clip(
+        c_low - polar_quantile * (c_low - c_high), -1.0, 1.0
+    ))))
+    return angle, 360.0 * azimuth_quantile, int(polar[backbone_index]), int(azimuth[backbone_index])
+
+
 def cone_placement(
     coords: Any,
     source_axis: Any,
@@ -107,6 +136,9 @@ def cone_placement(
     max_degrees: float,
     translation: float = 0.0,
     pivot: Any | None = None,
+    *,
+    sampled_angle_degrees: float | None = None,
+    sampled_azimuth_degrees: float | None = None,
 ) -> tuple[np.ndarray, dict[str, float | str]]:
     """Sample a target-relative approach cone around the selected source axis.
 
@@ -128,8 +160,22 @@ def cone_placement(
     rng = np.random.default_rng(seed)
     cos_min = np.cos(np.deg2rad(max_degrees))
     cos_max = np.cos(np.deg2rad(min_degrees))
-    theta = float(np.arccos(np.clip(rng.uniform(cos_min, cos_max), -1, 1)))
-    azimuth = float(rng.uniform(0, 2 * np.pi))
+    if (sampled_angle_degrees is None) != (sampled_azimuth_degrees is None):
+        raise ValueError('both stratified angle and azimuth must be supplied together')
+    if sampled_angle_degrees is None:
+        theta = float(np.arccos(np.clip(rng.uniform(cos_min, cos_max), -1, 1)))
+        azimuth = float(rng.uniform(0, 2 * np.pi))
+        policy = "uniform_solid_angle"
+    else:
+        if not (
+            np.isfinite([sampled_angle_degrees, sampled_azimuth_degrees]).all()
+            and min_degrees - 1e-9 <= sampled_angle_degrees <= max_degrees + 1e-9
+            and 0 <= sampled_azimuth_degrees < 360
+        ):
+            raise ValueError('stratified cone sample outside requested interval')
+        theta = float(np.deg2rad(sampled_angle_degrees))
+        azimuth = float(np.deg2rad(sampled_azimuth_degrees))
+        policy = "stratified_solid_angle"
     basis = np.zeros(3)
     basis[int(np.argmin(np.abs(source)))] = 1.0
     u = np.cross(source, basis)
@@ -162,7 +208,7 @@ def cone_placement(
         "guide_approach_deviation_degrees": float(achieved),
         "guide_azimuth_degrees": float(np.rad2deg(azimuth)),
         "guide_translation_angstrom": float(np.linalg.norm(shift)),
-        "guide_sampling_policy": "uniform_solid_angle",
+        "guide_sampling_policy": policy,
         "guide_pivot": "framework_centroid" if pivot is None else "antigen_patch_centroid",
     }
 
@@ -285,6 +331,16 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
     if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-6:
         raise ValueError('reference approach axis is undefined')
     axis = axis / np.linalg.norm(axis)
+    transported = axis @ body_rotation
+    basis = np.zeros(3)
+    basis[int(np.argmin(np.abs(axis)))] = 1.0
+    u = np.cross(axis, basis)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    tilt = float(np.rad2deg(np.arccos(np.clip(axis @ transported, -1, 1))))
+    # Azimuth has no geometric meaning at zero tilt; do not invent one.
+    azimuth = (float(np.rad2deg(np.arctan2(transported @ v, transported @ u)) % 360)
+               if tilt > 1e-5 else None)
     radial_change = None
     if target_patch_center is not None:
         pivot = np.asarray(target_patch_center, dtype=float)
@@ -302,7 +358,8 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
         'centroid_shift_angstrom': float(np.linalg.norm(fw.mean(0) - rf.mean(0))),
         'body_rotation_degrees': float(np.rad2deg(np.arccos(np.clip((np.trace(body_rotation) - 1) / 2, -1, 1)))),
         # Transport a fixed source-defined axis; do not redefine it from new CDRs.
-        'approach_degrees': float(np.rad2deg(np.arccos(np.clip(axis @ (axis @ body_rotation), -1, 1)))),
+        'approach_degrees': tilt,
+        'approach_azimuth_degrees': azimuth,
     }
 
 

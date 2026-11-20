@@ -29,7 +29,8 @@ from pose_geometry import (align, build_plan, digest, observed_arrays,
                            pose_metrics, read_chains, rmsd,
                            targeted_site_from_reference, native_epitope_template_ids, basin_site_from_author_ids,
                            template_author_to_native_ids, framework_map,
-                           site_contact_metrics, cone_placement, jitter, cross_distogram)
+                           site_contact_metrics, cone_placement, jitter, cross_distogram,
+                           stratified_cone_angles)
 
 HERE = Path(__file__).resolve().parent
 ARMS = [('control', 0, 0, 0), ('anchors4', 4, 0, 0), ('anchors8', 8, 0, 0),
@@ -372,6 +373,14 @@ def prepare(args: argparse.Namespace) -> None:
             }
             if label == 'cone16':
                 job_cfg['pose_guidance']['approach_angle_range_degrees'] = list(interval)
+                job_cfg['pose_guidance']['stratified_cone'] = bool(
+                    args.profile == 'basin' and getattr(args, 'stratified_cone', False))
+            # The native targeted-only baseline retains its ordinary viability
+            # gate. The guided arms can be evaluated without discarding every
+            # source-neighbourhood backbone for missing distant B004 hotspots.
+            job_cfg['pose_guidance']['bypass_targeted_backbone_gate'] = bool(
+                args.profile == 'basin' and pairs > 0
+                and getattr(args, 'bypass_guided_target_gate', False))
             path = root / 'configs' / f'{len(jobs):03d}_{label}_rep{rep}.json'
             write_json(path, job_cfg)  # JSON is also valid YAML for OmegaConf.
             jobs.append({'index': len(jobs), 'arm': label, 'replicate': rep,
@@ -407,6 +416,10 @@ def prepare(args: argparse.Namespace) -> None:
         'replicates': replicates,
         'sequences_per_backbone': args.sequences_per_backbone,
         'inverse_folder': args.inverse_folder,
+        'guided_gate_bypass': bool(args.profile == 'basin' and
+                                   getattr(args, 'bypass_guided_target_gate', False)),
+        'stratified_cone': bool(args.profile == 'basin' and
+                                getattr(args, 'stratified_cone', False)),
         'primary_endpoint': (
             'generated_backbone_approach_in_requested_angle_interval_AND_'
             'at_least_three_source_site_antigen_CAs_within_site_cutoff_of_generated_CDR_CAs'
@@ -510,16 +523,28 @@ def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]
     requested_pairs = int(setting.pairs)
     min_finite = requested_pairs
     max_overflow = 0
+    guide_angles, guide_azimuths = [], []
     for bidx in range(requested):
         seed = int.from_bytes(
             hashlib.sha256(f'{setting.seed}:{bidx}'.encode()).digest()[:4], 'big'
         )
         interval = setting.get('approach_angle_range_degrees')
         if interval is not None:
-            framework, _ = cone_placement(
+            kwargs = {}
+            if bool(setting.get('stratified_cone', False)):
+                angle, azimuth, _, _ = stratified_cone_angles(
+                    bidx, requested, int(setting.seed),
+                    float(interval[0]), float(interval[1]))
+                kwargs = {
+                    'sampled_angle_degrees': angle,
+                    'sampled_azimuth_degrees': azimuth,
+                }
+            framework, metadata = cone_placement(
                 source_fw, axis, seed, float(interval[0]), float(interval[1]),
-                float(setting.translation_angstrom), pivot=patch,
+                float(setting.translation_angstrom), pivot=patch, **kwargs,
             )
+            guide_angles.append(float(metadata['guide_approach_deviation_degrees']))
+            guide_azimuths.append(float(metadata['guide_azimuth_degrees']))
         else:
             framework = jitter(
                 source_fw, seed, float(setting.rotation_degrees),
@@ -536,6 +561,11 @@ def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]
         'checked_backbones': requested,
         'minimum_finite_guidance_pairs': min_finite,
         'maximum_overflow_guidance_pairs': max_overflow,
+        'guide_approach_min_degrees': min(guide_angles) if guide_angles else None,
+        'guide_approach_max_degrees': max(guide_angles) if guide_angles else None,
+        'guide_azimuth_quadrants_present': sorted({
+            min(3, int(phi // 90)) for phi in guide_azimuths}),
+        'stratified_cone': bool(setting.get('stratified_cone', False)),
     }
 
 
@@ -548,6 +578,12 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
 
     if cfg.inverse_folder.type == 'boltzif' and not hasattr(design, 'boltz_if'):
         raise ValueError('this runtime lacks the NOMINEE Boltz-IF adapter; use the current patched NOMINEE image')
+    if (cfg.pose_guidance.get('bypass_targeted_backbone_gate', False)
+            and not callable(getattr(design, 'evaluate_targeted_backbone_viability', None))):
+        raise ValueError(
+            'guided gate bypass requires the installed NOMINEE targeted-backbone '
+            'viability function; do not silently run an incompatible image'
+        )
     if cfg.get('antigen_symmetry') is not None and not callable(getattr(design, 'evaluate_cofold_symmetry', None)):
         raise ValueError('this image lacks the current NOMINEE declared-symmetry patch; repair the Promera image through dev')
     if len(cfg.get('target_chains') or []) > 1 and 'antigen_chains' not in inspect.signature(design.compute_dockq).parameters:
@@ -602,6 +638,9 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
                   if cfg.pose_guidance.get('approach_angle_range_degrees') is not None else None
               ),
               'inverse_folder': cfg.inverse_folder.type,
+              'guided_gate_bypass': bool(
+                  cfg.pose_guidance.get('bypass_targeted_backbone_gate', False)),
+              'stratified_cone': bool(cfg.pose_guidance.get('stratified_cone', False)),
               'image_path': os.environ.get('POSE_RUNTIME_IMAGE'),
               'experiment_commit': os.environ.get('POSE_EXPERIMENT_COMMIT'),
               'runtime_writable_dirs': runtime_writable_dirs,
@@ -798,6 +837,9 @@ def analyse(root: Path) -> None:
                 guide_fields = {
                     'guide_approach_deviation_degrees': guidance.get('guide_approach_deviation_degrees'),
                     'guide_azimuth_degrees': guidance.get('guide_azimuth_degrees'),
+                    'guide_angle_stratum': guidance.get('guide_angle_stratum'),
+                    'guide_azimuth_stratum': guidance.get('guide_azimuth_stratum'),
+                    'guided_gate_bypass': guidance.get('bypass_targeted_backbone_gate'),
                     'guide_sampling_policy': guidance.get('guide_sampling_policy'),
                     'requested_guidance_pairs': guidance.get('requested_guidance_pairs'),
                     'informative_guidance_pairs': guidance.get('informative_guidance_pairs'),
@@ -870,7 +912,8 @@ def analyse(root: Path) -> None:
     write_csv(destination / 'structures.csv', rows, ['arm', 'replicate', 'kind', 'cif', 'sequence', 'iptm',
         'scDockQ_json', 'target_fit_rmsd', 'source_framework_rmsd', 'framework_internal_rmsd',
         'centroid_shift_angstrom', 'patch_radius_change_angstrom', 'body_rotation_degrees', 'approach_degrees',
-        'guide_approach_deviation_degrees', 'guide_azimuth_degrees', 'guide_sampling_policy',
+        'approach_azimuth_degrees', 'guide_approach_deviation_degrees', 'guide_azimuth_degrees',
+        'guide_angle_stratum', 'guide_azimuth_stratum', 'guided_gate_bypass', 'guide_sampling_policy',
         'requested_guidance_pairs', 'informative_guidance_pairs', 'overflow_guidance_pairs',
         'maximum_anchor_distance_angstrom', 'targeted_site_enabled',
         'in_requested_angle', 'primary_hit',
@@ -940,6 +983,10 @@ def main() -> None:
     prep.add_argument('--seed', type=int, default=20261007)
     prep.add_argument('--inverse-folder', choices=['boltzif', 'abmpnn', 'proteinmpnn', 'none'], default='boltzif')
     prep.add_argument('--sequences-per-backbone', type=int, default=1)
+    prep.add_argument('--stratified-cone', action='store_true',
+                      help='basin repeat: stratify 0–20 degree/azimuth samples across each replicate')
+    prep.add_argument('--bypass-guided-target-gate', action='store_true',
+                      help='basin repeat: record native viability result but do not reject guided backbones')
     for command in ('preflight', 'run', 'analyse'):
         item = sub.add_parser(command)
         item.add_argument('--experiment', required=True)
