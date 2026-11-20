@@ -331,6 +331,16 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
     if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-6:
         raise ValueError('reference approach axis is undefined')
     axis = axis / np.linalg.norm(axis)
+    transported = axis @ body_rotation
+    basis = np.zeros(3)
+    basis[int(np.argmin(np.abs(axis)))] = 1.0
+    u = np.cross(axis, basis)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    tilt = float(np.rad2deg(np.arccos(np.clip(axis @ transported, -1, 1))))
+    # Azimuth has no geometric meaning at zero tilt; do not invent one.
+    azimuth = (float(np.rad2deg(np.arctan2(transported @ v, transported @ u)) % 360)
+               if tilt > 1e-5 else None)
     radial_change = None
     if target_patch_center is not None:
         pivot = np.asarray(target_patch_center, dtype=float)
@@ -348,7 +358,8 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
         'centroid_shift_angstrom': float(np.linalg.norm(fw.mean(0) - rf.mean(0))),
         'body_rotation_degrees': float(np.rad2deg(np.arccos(np.clip((np.trace(body_rotation) - 1) / 2, -1, 1)))),
         # Transport a fixed source-defined axis; do not redefine it from new CDRs.
-        'approach_degrees': float(np.rad2deg(np.arccos(np.clip(axis @ (axis @ body_rotation), -1, 1)))),
+        'approach_degrees': tilt,
+        'approach_azimuth_degrees': azimuth,
     }
 
 
