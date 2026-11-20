@@ -4,6 +4,57 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## B004 pilot: native targeted control versus pose-only distance guidance
+
+This pilot separates **native residue targeting** from **source-pose distance guidance**.
+Use `--pose-only-guides` instead of the experimental gate bypass:
+
+| Arm | Native epitope residues | Cross-chain distance pairs |
+|---|---|---:|
+| `targeted` | A:339/A:343 (native author-to-template mapping) | 0 |
+| `anchors16` | None | 16, fixed source pose |
+| `cone16` | None | 16, sampled 0–20° pose |
+
+All arms retain the target structure/template and the same Boltz-IF settings.
+The guided arms have `epitope_residues: []`, `nominee.has_epitope: false`,
+and no native epitope mask, so NOMINEE's **targeted** backbone gate is
+not invoked; there is no reason to bypass it. The native targeted-only
+control continues to use the standard gate. This is a comparison of
+**different generation strategies**, not a same-target-conditioning
+ablation. A:339/A:343 remain descriptive historical region labels in
+the analysis and are NOT a required hit for the pose-only conditions.
+
+Use `--stratified-cone` so each replicate spans both polar angle and
+azimuth rather than relying on random coverage. Requested distributions
+and observed backbone orientations are reported separately.
+
+```bash
+set -e
+SOURCE=/vast/home/users/chen.je/promera-pose-guidance
+NEW=/vast/home/users/chen.je/promera-b004-pose-only
+git -C "$SOURCE" fetch origin \
+  refs/heads/feature/b004-pose-only-guides:refs/remotes/origin/feature/b004-pose-only-guides
+git -C "$SOURCE" worktree add --detach "$NEW" origin/feature/b004-pose-only-guides
+module load apptainer
+python3 "$NEW/experiments/pose_guidance/launch_from_atlas.py" \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --profile basin --basin-id B004 \
+  --basin-residues A:339,A:343 \
+  --angle-range 0:20 --backbones 64 --replicates 3 \
+  --pose-only-guides --stratified-cone \
+  --nominee-config /vast/home/users/chen.je/dev/config.yaml \
+  --work /vast/scratch/users/chen.je/sandbox/pose-guidance-work
+```
+
+Do **not** add `--bypass-guided-target-gate`. The two modes are
+mutually exclusive. The launcher validates mappings/guide geometry,
+submits an A30 GPU array, then automatically schedules CPU analysis
+on successful completion. Results are in the new timestamped
+`...-angle-0-20-basin-*/analysis/basin/` directory, including
+`RESULTS.md`, `angular_sampling.csv`, `per_sequence.csv`,
+and the uploadable `basin-analysis.zip`.
+
 ## B004 repeat: native-gate audit and stratified angular cone
 
 The first B004 comparison generated 192 backbones per arm, but all 384
