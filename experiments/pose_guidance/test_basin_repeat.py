@@ -105,8 +105,9 @@ def test_angle_audit_counts_real_measurement_not_requested_bin():
 
 
 
+@pytest.mark.parametrize('diagnostic', [False, True])
 def test_b004_pose_only_guides_preserve_native_targeted_control(
-    prepared, monkeypatch, task_module,
+    prepared, monkeypatch, task_module, diagnostic,
 ):
     """Only the targeted control gets A339/A343 epitope tokens; the pose
     arms retain distance guidance, with the native targeted gate disabled
@@ -181,27 +182,64 @@ def test_b004_pose_only_guides_preserve_native_targeted_control(
         basin_id='B004', basin_residues='K:339,K:343',
         basin_npz=str(basin_npz), pose_only_guides=True,
         stratified_cone=True, bypass_guided_target_gate=False,
+        diagnostic_targeted_cone=diagnostic,
     )
     experiment.prepare(args)
     root = Path(args.out)
     manifest = json.loads((root / 'manifest.json').read_text())
     assert manifest['pose_only_guides'] is True
-    assert [j['arm'] for j in manifest['jobs']] == [
-        'targeted', 'targeted', 'anchors16', 'anchors16', 'cone16', 'cone16'
-    ]
-    assert manifest['arm_conditioning'] == {
-        'targeted': {'native_epitope_targeting': True, 'sparse_distance_pairs': 0},
-        'anchors16': {'native_epitope_targeting': False, 'sparse_distance_pairs': 16},
-        'cone16': {'native_epitope_targeting': False, 'sparse_distance_pairs': 16},
+    assert manifest['diagnostic_targeted_cone'] is diagnostic
+    expected_arms = (
+        ['targeted', 'targeted', 'anchors16', 'anchors16', 'cone16', 'cone16']
+        + (['targeted_cone16', 'targeted_cone16'] if diagnostic else [])
+    )
+    assert [j['arm'] for j in manifest['jobs']] == expected_arms
+    expected_conditioning = {
+        'targeted': {
+            'native_epitope_targeting': True, 'sparse_distance_pairs': 0,
+            'target_gate_policy': 'native',
+        },
+        'anchors16': {
+            'native_epitope_targeting': False, 'sparse_distance_pairs': 16,
+            'target_gate_policy': 'not_applicable',
+        },
+        'cone16': {
+            'native_epitope_targeting': False, 'sparse_distance_pairs': 16,
+            'target_gate_policy': 'not_applicable',
+        },
     }
+    if diagnostic:
+        expected_conditioning['targeted_cone16'] = {
+            'native_epitope_targeting': True, 'sparse_distance_pairs': 16,
+            'target_gate_policy': 'audit_only',
+        }
+    assert manifest['arm_conditioning'] == expected_conditioning
     module, _ = task_module
     for j in manifest['jobs']:
         _, config, _ = experiment.job_config(root, j['index'])
-        wanted = j['arm'] == 'targeted'
+        wanted = j['arm'] in {'targeted', 'targeted_cone16'}
         assert list(config.epitope_residues) == (['1', '3'] if wanted else [])
         assert bool(config.nominee.has_epitope) is wanted
         assert bool(config.pose_guidance.targeted_site_enabled) is wanted
-        assert not bool(config.pose_guidance.bypass_targeted_backbone_gate)
+        assert bool(config.pose_guidance.bypass_targeted_backbone_gate) is (
+            j['arm'] == 'targeted_cone16'
+        )
+        if j['arm'] == 'targeted_cone16':
+            assert not bool(config.pose_guidance.pose_only_guidance)
+            assert config.pose_guidance.pairs == 16
+            assert config.pose_guidance.stratified_cone is True
+            _, baseline, _ = experiment.job_config(
+                root, next(row['index'] for row in manifest['jobs']
+                           if row['arm'] == 'cone16'
+                           and row['replicate'] == j['replicate'])
+            )
+            # Same guide source, seed, sampling and angle distribution.
+            for key in (
+                'seed', 'pairs', 'approach_angle_range_degrees',
+                'stratified_cone', 'translation_angstrom',
+                'rotation_degrees', 'plan_sha256',
+            ):
+                assert config.pose_guidance[key] == baseline.pose_guidance[key]
         if not wanted:
             task = module.PoseGuidedDesign(config)
             task.features = [synthetic_features(
