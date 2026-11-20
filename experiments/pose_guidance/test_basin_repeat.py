@@ -10,7 +10,7 @@ import pytest
 
 import basin_analysis as ba
 import pose_geometry as geometry
-from test_pose_guidance import task_module
+from test_pose_guidance import task_module, prepared
 
 
 def test_cone_stratifies_solid_angle_and_azimuth_per_replicate():
