@@ -485,7 +485,15 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                     raise ValueError('generated backbone lacks native viability diagnostics')
                 confidence = json.loads(confidence_path.read_text())
                 gate = confidence.get('targeted_backbone_viability')
+                policy = manifest.get('arm_conditioning', {}).get(arm, {}).get(
+                    'target_gate_policy', 'native'
+                )
                 native_targeting = obs['native_epitope_targeting_enabled']
+                obs['target_gate_policy'] = policy
+                if policy == 'not_applicable' and native_targeting:
+                    raise ValueError('native gate policy contradicts targeted epitope config')
+                if policy == 'audit_only' and not native_targeting:
+                    raise ValueError('audit-only gate policy requires native epitope targeting')
                 if not native_targeting:
                     if gate is not None:
                         raise ValueError(
@@ -506,6 +514,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
                     obs['native_target_gate_reason'] = str(
                         gate.get('native_reason', gate.get('reason', 'unknown'))
                     )
+                    if (policy == 'audit_only'
+                            and obs['target_gate_status'] not in {'pass', 'bypassed'}):
+                        raise ValueError('diagnostic targeted cone incorrectly rejected before inverse folding')
                     if (manifest.get('guided_gate_bypass') and arm != 'targeted'
                             and obs['target_gate_status'] == 'reject'):
                         raise ValueError('guided target-gate bypass failed: native rejection still active')
@@ -579,6 +590,45 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     diversity = _diversity(backbones, plan)
     angular = _angular_audit(backbones, manifest)
     summary = _aggregate(observations, designs, backbones, diversity, totals, manifest)
+    # Direct, matched-design contrast: cone distances alone vs the same
+    # distances plus native A:339/A:343 epitope flags.
+    diagnostic = None
+    if manifest.get('diagnostic_targeted_cone'):
+        pairs = {row['arm']: row for row in summary}
+        if not {'cone16', 'targeted_cone16'}.issubset(pairs):
+            raise ValueError('diagnostic requested but cone16/targeted_cone16 arms are missing')
+        plain, combined = pairs['cone16'], pairs['targeted_cone16']
+        metrics = {
+            'source_neighbourhood_rate': (
+                'backbone_in_source_neighbourhood', 'generated_backbones'),
+            'cdr_driven_backbone_rate': (
+                'backbone_cdr_driven', 'generated_backbones'),
+            'mostly_cdr_contact_rate': (
+                'backbone_primarily_cdr_contact', 'generated_backbones'),
+            'designed_sequence_yield': ('designed_sequences', 'generated_backbones'),
+            'strict_own_scDockQ_pass_rate': (
+                'accepted_scDockQ_gt_023_provisional', 'designed_sequences'),
+        }
+        diagnostic = {}
+        for name, (numerator, denominator) in metrics.items():
+            first = (plain[numerator] / plain[denominator]
+                     if plain[denominator] else None)
+            second = (combined[numerator] / combined[denominator]
+                      if combined[denominator] else None)
+            diagnostic[name] = {
+                'cone16': first,
+                'targeted_cone16': second,
+                'absolute_difference_percentage_points': (
+                    (second - first) * 100
+                    if first is not None and second is not None else None),
+            }
+        diagnostic['reference'] = (
+            'matched cone16 and targeted_cone16: same reference backbone, '
+            '16 distance pairs, angular samples, seeds and run settings; '
+            'native A:339/A:343 targeting is present only in targeted_cone16. '
+            'A native targeted-gate rejection is recorded but bypassed there '
+            'so that inverse folding is evaluated in both arms.'
+        )
     # Independent SLURM replicates, not five refolds or pairwise RMSDs,
     # define the between-condition experimental repeat.
     by_replicate = []
@@ -617,6 +667,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         'profile': 'basin', 'basin_id': manifest['basin_id'],
         'arm_conditioning': manifest.get('arm_conditioning', {}),
         'pose_only_guides': bool(manifest.get('pose_only_guides', False)),
+        'diagnostic_targeted_cone': bool(manifest.get('diagnostic_targeted_cone', False)),
+        'diagnostic_contrast_vs_cone16': diagnostic,
         'source_backbone_epitope_scan_approach_angle_degrees': source_angle,
         'source_backbone_epitope_scan_CDR_fraction': source_contacts['cdr_contact_fraction'],
         'source_backbone_epitope_scan_class': source_contacts['epitope_scan_class'],
@@ -700,9 +752,35 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
             f"{a['measured_angle_median_degrees']:.1f}° | "
             f"{counts} | {a['measured_azimuth_quadrants_covered']}/4 |"
         )
+    if diagnostic:
+        lines += [
+            '', '## Matched hotspot-interference diagnostic', '',
+            'The contrast below holds the cone guide, pose, seeds and settings fixed.',
+            'Only native A:339/A:343 epitope conditioning is added in targeted_cone16.',
+            'The diagnostic retains the native rejection reason but bypasses the',
+            'target gate so both arms can be assessed by Boltz-IF.',
+            '',
+            '| Endpoint | Cone-only | Cone + native hotspots | Difference (percentage points) |',
+            '|---|---:|---:|---:|',
+        ]
+        for metric, values in diagnostic.items():
+            if metric == 'reference':
+                continue
+            def as_percent(value):
+                return f"{value * 100:.1f}%" if value is not None else 'n/a'
+            difference = values['absolute_difference_percentage_points']
+            delta = f"{difference:+.1f}" if difference is not None else 'n/a'
+            lines.append(
+                f"| {metric.replace('_', ' ')} | "
+                f"{as_percent(values['cone16'])} | "
+                f"{as_percent(values['targeted_cone16'])} | {delta} |"
+            )
+        lines += ['', 'A nonzero difference is an experimental observation, not',
+                  'proof that one signal caused all of it; compare replicates and',
+                  'check native gate diagnostics before making an inference.', '']
     lines += [
         '',
-        'The observed-azimuth values describe the whole VHH approach axis relative to',
+        'The observed-azimuth values describe the whole VHH approach axis relative to'
         'the source axis after antigen alignment. Framework-aligned CDR RMSDs below',
         'describe loop-shape diversity, a different quantity.',
         '',
@@ -722,8 +800,9 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         'The targeted-only control uses ordinary native epitope conditioning and its gate.',
         'In pose-only arms, *not_applicable* means no native epitope residue was supplied,',
         'so the targeted gate was not invoked. This is not an override of a rejection.',
-        'In an alternative gate-bypass run, *bypassed* retains the original rejection',
-        'reason while allowing further computation.',
+        'In the targeted_cone16 diagnostic, *bypassed* retains the original native',
+        'rejection reason while allowing Boltz-IF and independent refolding.',
+        'Do not interpret gate bypass as evidence of hotspot contact.',
         '',
         '## Enrichment relative to native B004 targeting', '',
         '| Arm | Primarily CDR contacts | Pose Atlas CDR-driven | B004-like proxy | Proxy enrichment vs targeted | Strict own-scDockQ>0.23 sequences |',
