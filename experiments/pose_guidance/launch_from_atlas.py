@@ -207,7 +207,10 @@ def launch(args: argparse.Namespace) -> None:
             raise ValueError("Expected one original Epitope Scan epitope_basins.npz: "
                              + ", ".join(map(str, candidate_npz)))
         basin_npz = present[0]
-    name = f"{selection['pose_id']}-angle-{tag}-{profile}-{stamp}"
+    variant = "-targeted-cone-diagnostic" if (
+        profile == "basin" and getattr(args, "diagnostic_targeted_cone", False)
+    ) else ""
+    name = f"{selection['pose_id']}-angle-{tag}-{profile}{variant}-{stamp}"
     experiment = work / name
     if experiment.exists():
         raise ValueError(f"Experiment directory already exists: {experiment}")
