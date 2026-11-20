@@ -602,7 +602,8 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
         'source_backbone_epitope_scan_class': source_contacts['epitope_scan_class'],
         'source_pose_sha256': plan['source_pose_sha256'],
         'basin_source_npz_sha256': plan['basin_reference']['npz_sha256'],
-        'site_author_ids': plan['targeted_site']['native_epitope_residue_ids'],
+        'site_author_ids': plan['targeted_site']['epitope_scan_author_residue_ids'],
+        'site_native_template_ids': plan['targeted_site']['native_epitope_residue_ids'],
         'target_schema_positions': plan['targeted_site']['schema_positions_1_based'],
         'epitope_scan_cutoff_angstrom': CUTOFF_ANGSTROM,
         'epitope_scan_class': 'angle<=20 and CDR binder-contact fraction>0.60; 5A heavy-atom contacts',
@@ -633,7 +634,10 @@ def analyse_basin(root: Path, existing: list[dict], totals: list[dict],
     lines = [
         '# B004 targeted versus pose-guided diffusion',
         '',
-        'Recommended native target IDs: ' + ', '.join('A:'+x for x in metrics['site_author_ids']),
+        'Recommended Epitope Scan author IDs: ' + ', '.join(
+            plan['targeted_site']['chain'] + ':' + x for x in metrics['site_author_ids']),
+        'Native Promera template label IDs: ' + ', '.join(
+            plan['targeted_site']['chain'] + ':' + x for x in metrics['site_native_template_ids']),
         'Source pose: B004__G047__5_389; angular guidance: 0–20° relative to this pose.',
         'Measured source BACKBONE Epitope Scan-style approach angle: '
           + str(source_angle) + '°; class: ' + source_contacts['epitope_scan_class']
