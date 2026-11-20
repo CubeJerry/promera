@@ -248,6 +248,10 @@ def launch(args: argparse.Namespace) -> None:
             "--basin-residues", str(args.basin_residues),
             "--basin-npz", str(basin_npz),
         ])
+        if getattr(args, "stratified_cone", False):
+            prepare_command.append("--stratified-cone")
+        if getattr(args, "bypass_guided_target_gate", False):
+            prepare_command.append("--bypass-guided-target-gate")
     if profile == "comparison":
         prepare_command.extend([
             "--site-cutoff-angstrom", str(getattr(args, "site_cutoff_angstrom", 10.0)),
@@ -266,6 +270,8 @@ def launch(args: argparse.Namespace) -> None:
         "approach_angle_range_degrees": list(map(float, interval.split(":"))),
         "basin_id": requested_basin if profile == "basin" else None,
         "basin_recommended_residues": str(args.basin_residues) if profile == "basin" else None,
+        "stratified_cone": bool(getattr(args, "stratified_cone", False)) if profile == "basin" else False,
+        "guided_gate_bypass": bool(getattr(args, "bypass_guided_target_gate", False)) if profile == "basin" else False,
         "epitope_scan_basin_archive": str(basin_npz) if profile == "basin" else None,
         "epitope_scan_basin_archive_sha256": _sha256(basin_npz) if profile == "basin" else None,
     }, indent=2) + "\n")
@@ -340,6 +346,10 @@ def main() -> int:
     parser.add_argument("--replicates", type=int,
                         help="independent replicate groups per arm (comparison default: 3)")
     parser.add_argument("--basin-id", default="B004", help="Original Epitope Scan basin")
+    parser.add_argument("--stratified-cone", action="store_true",
+                        help="stratify cone angles and azimuths across each replicate")
+    parser.add_argument("--bypass-guided-target-gate", action="store_true",
+                        help="continue inverse folding for guided arms despite native target-gate rejection")
     parser.add_argument("--basin-residues", default="A:339,A:343",
                         help="Native target-template author IDs; B004 recommendations")
     parser.add_argument("--site-cutoff-angstrom", type=float, default=10.0,
