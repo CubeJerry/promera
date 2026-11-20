@@ -1,7 +1,7 @@
 name: Pose guidance CPU contracts
 on:
   push:
-    branches: [feature/cross-chain-pose-conditioning, feature/b004-basin-comparison, feature/b004-gate-audit-cone-repeat]
+    branches: [feature/cross-chain-pose-conditioning, feature/b004-basin-comparison, feature/b004-gate-audit-cone-repeat, feature/b004-pose-only-guides]
     paths: ['experiments/pose_guidance/**', '.github/workflows/pose-guidance.yml']
   pull_request:
     paths: ['experiments/pose_guidance/**', '.github/workflows/pose-guidance.yml']

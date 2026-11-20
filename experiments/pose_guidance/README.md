@@ -4,6 +4,74 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## B004 pilot: native targeted control versus pose-only distance guidance
+
+This pilot separates **native residue targeting** from **source-pose distance guidance**.
+Use `--pose-only-guides` instead of the experimental gate bypass:
+
+| Arm | Native epitope residues | Cross-chain distance pairs |
+|---|---|---:|
+| `targeted` | A:339/A:343 (native author-to-template mapping) | 0 |
+| `anchors16` | None | 16, fixed source pose |
+| `cone16` | None | 16, sampled 0–20° pose |
+| `targeted_cone16` (diagnostic flag) | A:339/A:343 | **Same 16 sampled 0–20° distances as cone16** |
+
+All arms retain the target structure/template and the same Boltz-IF settings.
+The `anchors16` and `cone16` arms have `epitope_residues: []`,
+`nominee.has_epitope: false`, and no native epitope mask. The
+native targeted-only control retains its standard gate. The optional
+`targeted_cone16` arm **adds native targeting to the identical
+cone guides**, with matched seeds and sample indices. It records the
+native viability verdict but bypasses a rejection for this diagnostic
+arm only, allowing independent inverse folding/refolding. This ensures
+that gate attrition cannot masquerade as a generation effect.
+The pilot compares
+**different generation strategies**, not a same-target-conditioning
+ablation. A:339/A:343 remain descriptive historical region labels in
+the analysis and are NOT a required hit for the pose-only conditions.
+The key isolated contrast is `targeted_cone16` versus `cone16`:
+native hotspots present versus absent, with the same 16 distance
+pairs and angular draws. Interpret pose geometry separately from
+the native gate verdict and independent refolding.
+
+Use `--stratified-cone` so each replicate spans both polar angle and
+azimuth rather than relying on random coverage. Requested distributions
+and observed backbone orientations are reported separately.
+
+```bash
+set -e
+SOURCE=/vast/home/users/chen.je/promera-pose-guidance
+NEW=/vast/home/users/chen.je/promera-b004-four-arm
+git -C "$SOURCE" fetch origin \
+  refs/heads/feature/b004-pose-only-guides:refs/remotes/origin/feature/b004-pose-only-guides
+git -C "$SOURCE" worktree add --detach "$NEW" origin/feature/b004-pose-only-guides
+module load apptainer
+python3 "$NEW/experiments/pose_guidance/launch_from_atlas.py" \
+  --run /vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide \
+  --pose-id B004__G047__5_389 \
+  --profile basin --basin-id B004 \
+  --basin-residues A:339,A:343 \
+  --angle-range 0:20 --backbones 64 --replicates 3 \
+  --pose-only-guides --stratified-cone --diagnostic-targeted-cone \
+  --nominee-config /vast/home/users/chen.je/dev/config.yaml \
+  --work /vast/scratch/users/chen.je/sandbox/pose-guidance-work
+```
+
+Do **not** add `--bypass-guided-target-gate`: pose-only and that
+global bypass mode are mutually exclusive. The diagnostic arm handles
+its own native gate in audit-only mode. The four arms contain
+**4 × 3 × 64 = 768 backbones**, with one inverse-folded sequence
+per backbone and up to 3,840 unrestrained refolds.
+
+The launcher validates mappings/guide geometry, submits a 12-task
+A30 GPU array, then automatically schedules CPU analysis after it
+completes successfully. Results are in the newly timestamped
+`...-angle-0-20-basin-targeted-cone-diagnostic-*/analysis/basin/`
+directory, including `RESULTS.md`, `angular_sampling.csv`,
+`per_sequence.csv`, and `basin-analysis.zip`. The results report
+a direct `cone16` vs `targeted_cone16` diagnostic comparison
+and preserve the native targeted-gate rejection reasons.
+
 ## B004 repeat: native-gate audit and stratified angular cone
 
 The first B004 comparison generated 192 backbones per arm, but all 384

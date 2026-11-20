@@ -229,15 +229,30 @@ def prepare(args: argparse.Namespace) -> None:
         raise ValueError('angle translation bound must be finite and nonnegative')
     if interval is None and angle_shift:
         raise ValueError('--angle-translation-angstrom requires --angle-range')
+    if (getattr(args, 'pose_only_guides', False) and args.profile != 'basin'):
+        raise ValueError('--pose-only-guides is only supported for the B004 basin profile')
+    if getattr(args, 'diagnostic_targeted_cone', False) and (
+        args.profile != 'basin' or not getattr(args, 'pose_only_guides', False)
+    ):
+        raise ValueError(
+            '--diagnostic-targeted-cone requires --profile basin and --pose-only-guides'
+        )
+    if (getattr(args, 'pose_only_guides', False)
+            and getattr(args, 'bypass_guided_target_gate', False)):
+        raise ValueError('--pose-only-guides already disables the native target gate; '
+                         'do not combine with --bypass-guided-target-gate')
     if args.profile == 'comparison':
         # The primary null control sees the identical target epitope but no
         # inter-chain distances. An untargeted arm remains as context only.
         selected_arms = [('control', 0, 0, 0), ('targeted', 0, 0, 0),
                          ('anchors16', 16, 0, 0), ('cone16', 16, 0, angle_shift)]
     elif args.profile == 'basin':
-        # Identical native B004 target site; only the two guidance modes differ.
         selected_arms = [('targeted', 0, 0, 0),
                          ('anchors16', 16, 0, 0), ('cone16', 16, 0, angle_shift)]
+        if getattr(args, 'diagnostic_targeted_cone', False):
+            # Paired with cone16: SAME source pose, angular guide, seeds and
+            # diffusion parameters; change ONLY native epitope conditioning.
+            selected_arms.append(('targeted_cone16', 16, 0, angle_shift))
     else:
         selected_arms = [ARMS[0], ARMS[3]] if args.profile == 'smoke' else list(ARMS)
         if interval is not None:
@@ -352,7 +367,12 @@ def prepare(args: argparse.Namespace) -> None:
         for rep in range(replicates):
             job_cfg = copy.deepcopy(cfg)
             job_cfg['output'] = str(root / 'results' / label / f'rep{rep}')
-            site_enabled = args.profile in {'comparison', 'basin'} and label != 'control'
+            site_enabled = (
+                args.profile in {'comparison', 'basin'} and label != 'control'
+                and not (args.profile == 'basin'
+                         and getattr(args, 'pose_only_guides', False)
+                         and pairs > 0 and label != 'targeted_cone16')
+            )
             if args.profile in {'comparison', 'basin'}:
                 # Use Promera's *native* targeted epitope configuration, not
                 # an extra feature injection after featurization. Mapping
@@ -370,8 +390,13 @@ def prepare(args: argparse.Namespace) -> None:
                 'plan': str(root / 'plan.json'), 'plan_sha256': digest(root / 'plan.json'),
                 'pairs': pairs, 'rotation_degrees': angle, 'translation_angstrom': shift,
                 'seed': args.seed + rep, 'targeted_site_enabled': site_enabled,
+                'pose_only_guidance': bool(
+                    args.profile == 'basin' and pairs > 0
+                    and getattr(args, 'pose_only_guides', False)
+                    and label != 'targeted_cone16'
+                ),
             }
-            if label == 'cone16':
+            if label in {'cone16', 'targeted_cone16'}:
                 job_cfg['pose_guidance']['approach_angle_range_degrees'] = list(interval)
                 job_cfg['pose_guidance']['stratified_cone'] = bool(
                     args.profile == 'basin' and getattr(args, 'stratified_cone', False))
@@ -379,8 +404,11 @@ def prepare(args: argparse.Namespace) -> None:
             # gate. The guided arms can be evaluated without discarding every
             # source-neighbourhood backbone for missing distant B004 hotspots.
             job_cfg['pose_guidance']['bypass_targeted_backbone_gate'] = bool(
-                args.profile == 'basin' and pairs > 0
-                and getattr(args, 'bypass_guided_target_gate', False))
+                args.profile == 'basin' and pairs > 0 and (
+                    getattr(args, 'bypass_guided_target_gate', False)
+                    or label == 'targeted_cone16'
+                )
+            )
             path = root / 'configs' / f'{len(jobs):03d}_{label}_rep{rep}.json'
             write_json(path, job_cfg)  # JSON is also valid YAML for OmegaConf.
             jobs.append({'index': len(jobs), 'arm': label, 'replicate': rep,
@@ -418,6 +446,28 @@ def prepare(args: argparse.Namespace) -> None:
         'inverse_folder': args.inverse_folder,
         'guided_gate_bypass': bool(args.profile == 'basin' and
                                    getattr(args, 'bypass_guided_target_gate', False)),
+        'pose_only_guides': bool(args.profile == 'basin' and
+                                 getattr(args, 'pose_only_guides', False)),
+        'diagnostic_targeted_cone': bool(
+            args.profile == 'basin' and getattr(args, 'diagnostic_targeted_cone', False)
+        ),
+        'arm_conditioning': {
+            label: {
+                'native_epitope_targeting': bool(
+                    any(job['arm'] == label and job['targeted_site_enabled']
+                        for job in jobs)),
+                'sparse_distance_pairs': int(next(
+                    row[1] for row in selected_arms if row[0] == label)),
+                'target_gate_policy': (
+                    'audit_only' if label == 'targeted_cone16'
+                    else 'native' if any(
+                        job['arm'] == label and job['targeted_site_enabled']
+                        for job in jobs
+                    ) else 'not_applicable'
+                ),
+            }
+            for label in dict.fromkeys(job['arm'] for job in jobs)
+        },
         'stratified_cone': bool(args.profile == 'basin' and
                                 getattr(args, 'stratified_cone', False)),
         'primary_endpoint': (
@@ -987,6 +1037,10 @@ def main() -> None:
                       help='basin repeat: stratify 0–20 degree/azimuth samples across each replicate')
     prep.add_argument('--bypass-guided-target-gate', action='store_true',
                       help='basin repeat: record native viability result but do not reject guided backbones')
+    prep.add_argument('--pose-only-guides', action='store_true',
+                      help='basin repeat: disable native epitope targeting only for anchors16/cone16')
+    prep.add_argument('--diagnostic-targeted-cone', action='store_true',
+                      help='add matched cone16+native-hotspots arm, auditing but bypassing the native gate')
     for command in ('preflight', 'run', 'analyse'):
         item = sub.add_parser(command)
         item.add_argument('--experiment', required=True)
