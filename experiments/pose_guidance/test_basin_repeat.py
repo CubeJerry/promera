@@ -102,3 +102,133 @@ def test_angle_audit_counts_real_measurement_not_requested_bin():
     assert item['measured_angle_median_degrees']==12
     assert item['requested_angles']==5
     assert math.isfinite(item['requested_vs_measured_angle_r'])
+
+
+
+def test_b004_pose_only_guides_preserve_native_targeted_control(
+    prepared, monkeypatch, task_module,
+):
+    """Only the targeted control gets A339/A343 epitope tokens; the pose
+    arms retain distance guidance, with the native targeted gate disabled
+    by the absence of target residues (not a bypass patch).
+    """
+    import argparse
+    import json
+    from pathlib import Path
+    import experiment
+    from test_pose_guidance import fixtures, synthetic_features
+
+    chains, _, _ = fixtures()
+    template_path = prepared.parent / 'template.cif'
+    template_path.write_text('mocked target template')
+    basin_npz = prepared.parent / 'epitope_basins.npz'
+    basin_npz.write_bytes(b'mocked basin signatures')
+
+    cfg_path = prepared.parent / 'base.yaml'
+    cfg = json.loads(cfg_path.read_text())
+    cfg['target_template'] = {
+        'path': str(template_path), 'chain': 'K',
+        'min_identity': 0.8, 'min_coverage': 0.7,
+    }
+    cfg_path.write_text(json.dumps(cfg))
+
+    t_chain = {
+        'sequence': 'ACDEF',
+        'coords': np.asarray(chains['L']['coords'], dtype=float),
+        'residue_ids': ['1', '2', '3', '4', '5'],
+    }
+    monkeypatch.setattr(
+        experiment, 'read_chains',
+        lambda path: {'K': t_chain} if Path(path) == template_path else chains,
+    )
+    monkeypatch.setattr(
+        experiment, 'template_author_to_native_ids',
+        lambda path, chain: {'339': '1', '343': '3'},
+    )
+    monkeypatch.setattr(
+        experiment, 'basin_site_from_author_ids',
+        lambda *args, **kwargs: {
+            'chain': 'K',
+            'schema_positions_1_based': [1, 3],
+            'native_epitope_residue_ids': ['1', '3'],
+            'epitope_scan_author_residue_ids': ['339', '343'],
+            'source_cdr_ca_cutoff_angstrom': 10.0,
+        },
+    )
+    monkeypatch.setattr(
+        experiment, 'basin_reference_from_npz',
+        lambda *args, **kwargs: {
+            'basin_id': 'B004', 'target_chain': 'K',
+            'selected_basin_author_ids': ['339', '343'],
+            'regions': {'B004': {
+                'footprint_schema_positions': [1, 2, 3],
+                'core_schema_positions': [1, 3],
+            }},
+            'npz_sha256': 'synthetic',
+        },
+    )
+    args = argparse.Namespace(
+        base_config=str(cfg_path),
+        pose=str(prepared.parent / 'guide.cif'),
+        guide_binder_chain='N',
+        target_map='{"K":"L"}',
+        msa_dir=None,
+        out=str(prepared.parent / 'pose-only-basin'),
+        backbones=2, replicates=2, batch_size=1,
+        profile='basin', seed=100,
+        inverse_folder='boltzif', sequences_per_backbone=1,
+        angle_range='0:20', angle_translation_angstrom=0.0,
+        basin_id='B004', basin_residues='K:339,K:343',
+        basin_npz=str(basin_npz), pose_only_guides=True,
+        stratified_cone=True, bypass_guided_target_gate=False,
+    )
+    experiment.prepare(args)
+    root = Path(args.out)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    assert manifest['pose_only_guides'] is True
+    assert [j['arm'] for j in manifest['jobs']] == [
+        'targeted', 'targeted', 'anchors16', 'anchors16', 'cone16', 'cone16'
+    ]
+    assert manifest['arm_conditioning'] == {
+        'targeted': {'native_epitope_targeting': True, 'sparse_distance_pairs': 0},
+        'anchors16': {'native_epitope_targeting': False, 'sparse_distance_pairs': 16},
+        'cone16': {'native_epitope_targeting': False, 'sparse_distance_pairs': 16},
+    }
+    module, _ = task_module
+    for j in manifest['jobs']:
+        _, config, _ = experiment.job_config(root, j['index'])
+        wanted = j['arm'] == 'targeted'
+        assert list(config.epitope_residues) == (['1', '3'] if wanted else [])
+        assert bool(config.nominee.has_epitope) is wanted
+        assert bool(config.pose_guidance.targeted_site_enabled) is wanted
+        assert not bool(config.pose_guidance.bypass_targeted_backbone_gate)
+        if not wanted:
+            task = module.PoseGuidedDesign(config)
+            task.features = [synthetic_features(
+                'ACDEGGFGHIAAKLMNTTPQRS', 0,
+            )]
+            features = task[0]
+            assert not features['is_epitope'].any()
+            assert features['pose_record']['requested_guidance_pairs'] == 16
+            if j['arm'] == 'cone16':
+                assert config.pose_guidance.stratified_cone is True
+
+
+def test_pose_only_and_gate_bypass_are_mutually_exclusive(prepared):
+    import argparse
+    import experiment
+    from pathlib import Path
+    # Early failure happens before any output directory is created.
+    args = argparse.Namespace(
+        base_config=str(prepared.parent / 'base.yaml'),
+        pose=str(prepared.parent / 'guide.cif'),
+        guide_binder_chain='N', target_map='{"K":"L"}',
+        msa_dir=None, out=str(prepared.parent / 'invalid-run'),
+        backbones=2, replicates=1, batch_size=1,
+        profile='smoke', seed=100,
+        inverse_folder='boltzif', sequences_per_backbone=1,
+        angle_range=None, angle_translation_angstrom=0.0,
+        pose_only_guides=True, bypass_guided_target_gate=True,
+    )
+    with pytest.raises(ValueError, match='only supported for the B004'):
+        experiment.prepare(args)
