@@ -209,7 +209,7 @@ def launch(args: argparse.Namespace) -> None:
     print("Backbone SHA256:", _sha256(selection["canonical_backbone"]), flush=True)
     print("Matching batch configuration:", selection["base_config"], flush=True)
     print("Source-relative angle interval:", interval, "degrees", flush=True)
-    print("Angular sampling:", args.angle_sampling, flush=True)
+    print("Angular sampling:", getattr(args, "angle_sampling", "uniform_solid_angle"), flush=True)
     print("Experimental profile:", profile, flush=True)
     print("New experiment directory:", experiment, flush=True)
     if args.dry_run:
@@ -223,7 +223,7 @@ def launch(args: argparse.Namespace) -> None:
         "--out", str(experiment),
         "--profile", profile,
         "--angle-range", interval,
-        "--angle-sampling", args.angle_sampling,
+        "--angle-sampling", getattr(args, "angle_sampling", "uniform_solid_angle"),
     ]
     if getattr(args, "backbones", None) is not None:
         prepare_command.extend(["--backbones", str(args.backbones)])
