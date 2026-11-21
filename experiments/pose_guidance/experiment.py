@@ -341,7 +341,7 @@ def verify_writable_runtime() -> dict[str, str]:
     return checked
 
 
-def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]:
+def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, Any]:
     """Cheap full-budget geometry check; no sequence featurization or GPU work.
 
     Preflight's two real featurized items only check the leading RNG draws.
@@ -360,18 +360,22 @@ def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]
     requested_pairs = int(setting.pairs)
     min_finite = requested_pairs
     max_overflow = 0
+    sampled_angles = []
+    sampled_azimuths = []
     for bidx in range(requested):
         seed = int.from_bytes(
             hashlib.sha256(f'{setting.seed}:{bidx}'.encode()).digest()[:4], 'big'
         )
         interval = setting.get('approach_angle_range_degrees')
         if interval is not None:
-            framework, _ = cone_placement(
+            framework, guide = cone_placement(
                 source_fw, axis, seed, float(interval[0]), float(interval[1]),
                 float(setting.translation_angstrom), pivot=patch,
                 sampling_policy=str(setting.get('angle_sampling', 'uniform_solid_angle')),
                 sample_index=bidx, sample_count=requested, schedule_seed=int(setting.seed),
             )
+            sampled_angles.append(float(guide['guide_approach_deviation_degrees']))
+            sampled_azimuths.append(float(guide['guide_azimuth_degrees']))
         else:
             framework = jitter(
                 source_fw, seed, float(setting.rotation_degrees),
@@ -384,10 +388,24 @@ def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]
         informative = sum(bool(row['finite_distance_information']) for row in records)
         min_finite = min(min_finite, informative)
         max_overflow = max(max_overflow, requested_pairs - informative)
+    angle_histogram = {}
+    if sampled_angles:
+        low, high = map(float, setting.approach_angle_range_degrees)
+        for left in np.arange(low, high, 5.0):
+            right = min(float(left + 5.0), high)
+            angle_histogram[f'{left:g}-{right:g}'] = sum(
+                left <= angle < right or (right == high and angle == right)
+                for angle in sampled_angles
+            )
     return {
         'checked_backbones': requested,
         'minimum_finite_guidance_pairs': min_finite,
         'maximum_overflow_guidance_pairs': max_overflow,
+        'guide_angle_histogram_5_degrees': angle_histogram,
+        'guide_azimuth_quadrant_counts': [
+            sum(start <= angle < start + 90 for angle in sampled_azimuths)
+            for start in (0, 90, 180, 270)
+        ],
     }
 
 
