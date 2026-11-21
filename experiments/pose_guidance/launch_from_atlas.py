@@ -170,10 +170,11 @@ def launch(args: argparse.Namespace) -> None:
     repo = here.parent.parent
     expected_launcher = repo / "experiments" / "pose_guidance" / "container.sh"
     expected_slurm = repo / "experiments" / "pose_guidance" / "run.slurm"
-    if not expected_launcher.is_file() or not expected_slurm.is_file():
+    expected_analysis = repo / "experiments" / "pose_guidance" / "analyse.slurm"
+    if not all(p.is_file() for p in (expected_launcher, expected_slurm, expected_analysis)):
         raise ValueError(
             f"Invalid experimental repository root {repo}; expected "
-            f"{expected_launcher} and {expected_slurm}"
+            f"{expected_launcher}, {expected_slurm} and {expected_analysis}"
         )
     config = Path(args.nominee_config).expanduser().resolve()
     if not config.is_file():
@@ -261,20 +262,52 @@ def launch(args: argparse.Namespace) -> None:
                        check=True, env=env)
     print(f"All {len(jobs)} CPU preflights passed.", flush=True)
     if args.no_submit:
-        print("No job submitted (--no-submit).", flush=True)
-        print(f"To submit: POSE_SOURCE={repo} POSE_WORK={work} "
-              f"POSE_EXPERIMENT={experiment} sbatch --array={array} {here / 'run.slurm'}")
+        print("Prepared and preflighted only (--no-submit).", flush=True)
+        print("Normal launcher submission schedules GPU generation and automatic CPU analysis.", flush=True)
         return
     if not shutil_which_sbatch():
         raise ValueError("sbatch not found on PATH; run from the HPC login node")
-    subprocess.run(["sbatch", f"--array={array}", str(here / "run.slurm")],
-                   check=True, env=env, cwd=str(work))
+    submitted_gpu = subprocess.run(
+        ["sbatch", "--parsable", f"--array={array}",
+         f"--output={experiment / 'gpu-%A_%a.out'}", str(expected_slurm)],
+        check=True, env=env, cwd=str(work), stdout=subprocess.PIPE, text=True,
+    )
+    gpu_job_id = parse_sbatch_job_id(submitted_gpu.stdout)
+    try:
+        submitted_analysis = subprocess.run(
+            ["sbatch", "--parsable", f"--dependency=afterany:{gpu_job_id}",
+             f"--output={experiment / 'analysis-%j.out'}", str(expected_analysis)],
+            check=True, env=env, cwd=str(work), stdout=subprocess.PIPE, text=True,
+        )
+        analysis_job_id = parse_sbatch_job_id(submitted_analysis.stdout)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            f"GPU array {gpu_job_id} was submitted, but automatic analysis scheduling failed. "
+            f"Retry the CPU analysis submission with: sbatch --dependency=afterany:{gpu_job_id} "
+            f"--output={experiment / 'analysis-%j.out'} {expected_analysis}"
+        ) from exc
+    (experiment / "slurm_jobs.json").write_text(json.dumps({
+        "gpu_array_job_id": gpu_job_id,
+        "analysis_job_id": analysis_job_id,
+        "analysis_dependency": f"afterany:{gpu_job_id}",
+    }, indent=2) + "\n")
     n_backbones = sum(int(job['requested_backbones']) for job in jobs)
     sequences = int(prepared_manifest.get('sequences_per_backbone', 1))
     inverse = prepared_manifest.get('inverse_folder', 'boltzif')
     refolds = 0 if inverse == 'none' else n_backbones * sequences * 5
-    print(f"Submitted: {len(jobs)} jobs, {n_backbones} backbones, up to {refolds} refolds.", flush=True)
-    print(f"After completion: bash {launcher} analyse --experiment {experiment}", flush=True)
+    print(f"Submitted GPU array {gpu_job_id}: {len(jobs)} tasks, "
+          f"{n_backbones} backbones, up to {refolds} refolds.", flush=True)
+    print(f"Auto-analysis job {analysis_job_id} queued after the full GPU array.", flush=True)
+    print(f"Reports will appear in: {experiment / 'analysis'}", flush=True)
+    print(f"Analysis log: {experiment / ('analysis-' + analysis_job_id + '.out')}", flush=True)
+
+
+def parse_sbatch_job_id(output: str) -> str:
+    """The --parsable format is JOBID or JOBID;CLUSTER."""
+    job_id = output.strip().split(";", 1)[0]
+    if not re.fullmatch(r"[0-9]+", job_id):
+        raise ValueError(f"Unexpected sbatch --parsable output: {output!r}")
+    return job_id
 
 
 def shutil_which_sbatch() -> bool:
