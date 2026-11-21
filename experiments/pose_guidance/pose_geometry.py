@@ -147,12 +147,17 @@ def cone_placement(
         while math.gcd(stride, sample_count) != 1:
             stride += 1
         rank = (sample_index * stride + int(schedule_seed)) % sample_count
+        # Keep counts balanced in ~5-degree bands, even when N is not divisible
+        # by the number of bands. Within each band, stratify its own angles.
+        bands = max(1, min(sample_count, int(np.ceil((max_degrees - min_degrees) / 5.0))))
+        band, slot = rank % bands, rank // bands
+        band_size = sample_count // bands + int(band < sample_count % bands)
         degrees = min_degrees + (max_degrees - min_degrees) * (
-            (rank + rng.random()) / sample_count
+            (band + (slot + rng.random()) / band_size) / bands
         )
         theta = float(np.deg2rad(degrees))
         phase = np.random.default_rng(int(schedule_seed)).random()
-        azimuth = float(2 * np.pi * ((rank * golden + phase) % 1.0))
+        azimuth = float(2 * np.pi * ((slot * golden + band * golden**2 + phase) % 1.0))
     else:
         raise ValueError(f"unrecognized angular sampling policy: {sampling_policy}")
     basis = np.zeros(3)
