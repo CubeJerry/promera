@@ -128,6 +128,9 @@ class PoseGuidedDesign(Design):
                 pivot=np.asarray(self.plan['target_coords'], dtype=float)[
                     self.plan['target_landmarks']
                 ].mean(axis=0),
+                sampling_policy=str(self.guide.get('angle_sampling', 'uniform_solid_angle')),
+                sample_index=b_idx, sample_count=int(self.cfg.num_backbones),
+                schedule_seed=int(self.guide.seed),
             )
         else:
             framework = jitter(self.plan['source_framework_coords'], seed,
