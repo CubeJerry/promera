@@ -5,6 +5,7 @@ import argparse
 import ast
 import copy
 import csv
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -610,6 +611,42 @@ def test_direct_angle_cone_is_rigid_and_measurably_in_range(lo, hi):
             )
 
 
+def test_stratified_cone_balances_bands_and_recovers_true_tilt():
+    _, _, plan = fixtures()
+    target = np.asarray(plan['target_coords'])
+    framework = np.asarray(plan['source_framework_coords'])
+    patch = target[plan['target_landmarks']].mean(0)
+    for replicate_seed in (20261007, 20261008, 20261009):
+        angles, azimuths = [], []
+        for index in range(32):
+            seed = int.from_bytes(hashlib.sha256(
+                f"{replicate_seed}:{index}".encode()
+            ).digest()[:4], 'big')
+            placed, guide = g.cone_placement(
+                framework, plan['source_axis'], seed, 0, 35,
+                pivot=patch, sampling_policy='stratified_degrees',
+                sample_index=index, sample_count=32,
+                schedule_seed=replicate_seed,
+            )
+            observed = g.pose_metrics(
+                target, framework, target, placed, plan['source_axis'],
+                target_patch_center=patch, guide_axis=guide['guide_axis_xyz'],
+            )
+            assert guide['guide_sampling_policy'] == 'stratified_degrees'
+            assert observed['approach_degrees'] == pytest.approx(
+                guide['guide_approach_deviation_degrees'], abs=1e-5
+            )
+            assert observed['guide_axis_error_degrees'] == pytest.approx(0, abs=1e-5)
+            angles.append(guide['guide_approach_deviation_degrees'])
+            azimuths.append(guide['guide_azimuth_degrees'])
+        counts, _ = np.histogram(angles, bins=np.arange(0, 36, 5))
+        assert min(counts) == 4 and max(counts) == 5
+        assert len(set(round(value, 6) for value in azimuths)) == 32
+    with pytest.raises(ValueError, match='backbone index and count'):
+        g.cone_placement(framework, plan['source_axis'], 12, 0, 35,
+                         sampling_policy='stratified_degrees')
+
+
 def angular_fixture(prepared, *, interval="15:35", translation=0.0):
     args = argparse.Namespace(
         base_config=str(prepared.parent / 'base.yaml'),
@@ -625,7 +662,8 @@ def angular_fixture(prepared, *, interval="15:35", translation=0.0):
     return Path(args.out)
 
 
-def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2):
+def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2,
+                       angle_sampling='uniform_solid_angle'):
     args = argparse.Namespace(
         base_config=str(prepared.parent / 'base.yaml'),
         pose=str(prepared.parent / 'guide.cif'),
@@ -634,7 +672,7 @@ def comparison_fixture(prepared, *, interval="0:20", backbones=3, replicates=2):
         backbones=backbones, replicates=replicates, batch_size=1,
         profile='comparison', seed=100, inverse_folder='boltzif',
         sequences_per_backbone=1, angle_range=interval,
-        angle_translation_angstrom=0.0,
+        angle_sampling=angle_sampling, angle_translation_angstrom=0.0,
         # This synthetic binder is ~20 A from the tiny synthetic target;
         # the real B004 source yields 33 CDR-proximal antigen residues at 10 A.
         site_cutoff_angstrom=25.0,
@@ -861,6 +899,21 @@ def test_comparison_creates_paired_site_only_and_guided_arms(prepared):
         assert list(by_arm['cone16'][rep].pose_guidance.approach_angle_range_degrees) == [0, 20]
 
 
+def test_comparison_stratified_pilot_schedule_is_isolated(prepared):
+    root = comparison_fixture(prepared, interval='0:35', backbones=32,
+                              replicates=3, angle_sampling='stratified_degrees')
+    manifest = experiment.load_json(root / 'manifest.json')
+    assert manifest['angle_sampling'] == 'stratified_degrees'
+    assert manifest['angle_range_requested_degrees'] == [0, 35]
+    assert len(manifest['jobs']) == 12
+    for job in manifest['jobs']:
+        _, cfg, _ = experiment.job_config(root, job['index'])
+        if job['arm'] == 'cone16':
+            assert cfg.pose_guidance.angle_sampling == 'stratified_degrees'
+        else:
+            assert cfg.pose_guidance.get('angle_sampling') is None
+
+
 def test_comparison_all_site_arms_have_identical_epitope_features(task_module, prepared):
     module, _ = task_module
     root = comparison_fixture(prepared)
@@ -922,6 +975,25 @@ def test_comparison_analysis_primary_endpoint_and_wilson(prepared):
     assert effect['complete'] is True
     assert effect['absolute_primary_hit_fraction_difference'] == 0.0
     assert experiment.wilson95(0, 0) == (None, None)
+
+
+def test_angle_response_bins_recovered_not_just_requested():
+    manifest = {'angle_range_requested_degrees': [0, 35]}
+    rows = [
+        {'kind': 'backbone', 'arm': 'cone16',
+         'guide_approach_deviation_degrees': theta,
+         'approach_degrees': recovered,
+         'guide_axis_error_degrees': error}
+        for theta, recovered, error in [(2.1, 10.0, 8.0), (3.2, 18.0, 15.0),
+                                        (21.3, 23.0, 3.0), (31.7, 33.0, 2.5)]
+    ]
+    summary = experiment.angle_response(manifest, rows)
+    assert len(summary) == 7
+    assert summary[0]['observed_backbones'] == 2
+    assert summary[0]['median_recovered_angle'] == pytest.approx(14.0)
+    assert summary[4]['median_guide_axis_error_degrees'] == pytest.approx(3.0)
+    assert summary[6]['median_abs_polar_error_degrees'] == pytest.approx(1.3)
+    assert summary[2]['observed_backbones'] == 0
 
 
 def test_prepare_angle_range_separate_generation_arm(prepared):
