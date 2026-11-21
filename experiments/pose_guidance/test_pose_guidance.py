@@ -347,10 +347,14 @@ def test_refold_guard_rejects_leaks_and_restores_model(task_module, key):
 
 
 def test_no_outputs_are_not_biological_failures(prepared, monkeypatch):
-    experiment.analyse(prepared)
+    with pytest.raises(ValueError, match='incomplete'):
+        experiment.analyse(prepared)
     with (prepared / 'analysis/conditions.csv').open() as handle:
         rows = list(csv.DictReader(handle))
     assert all(row['status'] == 'not_run' and row['missing_backbones'] == '2' for row in rows)
+    report = json.loads((prepared / 'analysis/status.json').read_text())
+    assert report['status'] == 'incomplete'
+    assert len(report['incomplete_jobs']) == 2
 
 
 def test_analysis_exports_matching_refold_not_highest_wrong_pose(prepared, monkeypatch):
@@ -367,7 +371,8 @@ def test_analysis_exports_matching_refold_not_highest_wrong_pose(prepared, monke
         (folder / f'refolds/{stem}.cif').write_text('synthetic')
         experiment.write_json(folder / f'refolds/{stem}_confidence.json', {'complex_iptm': score})
     monkeypatch.setattr(experiment, 'read_chains', lambda path: wrong if 'refold1' in str(path) else observed)
-    experiment.analyse(prepared)
+    with pytest.raises(ValueError, match='incomplete'):
+        experiment.analyse(prepared)
     with (prepared / 'analysis/protenix_inputs.csv').open() as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
@@ -1200,20 +1205,35 @@ def test_atlas_launcher_submits_using_repository_root_not_experiments(
                          for i, arm in enumerate(('control', 'anchors16', 'cone16'))],
                 'inverse_folder': 'boltzif', 'sequences_per_backbone': 1,
             }))
+        if argv[0] == "sbatch":
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout="9001\n" if "--array=0-2%1" in argv else "9002;milton\n",
+            )
         return types.SimpleNamespace(returncode=0)
     monkeypatch.setattr(atlas.subprocess, "run", simulate_run)
     monkeypatch.setattr(atlas, "shutil_which_sbatch", lambda: True)
     atlas.launch(args)
-    assert len(invocations) == 5
+    assert len(invocations) == 6
     assert [cmd[0][2] for cmd in invocations[:4]] == [
         "prepare", "preflight", "preflight", "preflight"
     ]
-    sbatch, kw = invocations[-1]
-    assert sbatch[0] == "sbatch"
+    sbatch, kw = invocations[-2]
+    analysis, analysis_kw = invocations[-1]
+    assert sbatch[0] == analysis[0] == "sbatch"
+    assert "--parsable" in sbatch and "--parsable" in analysis
     assert "--array=0-2%1" in sbatch
+    assert "--dependency=afterany:9001" in analysis
     assert Path(sbatch[-1]) == Path(atlas.__file__).resolve().with_name("run.slurm")
+    assert Path(analysis[-1]) == Path(atlas.__file__).resolve().with_name("analyse.slurm")
     assert kw["env"]["POSE_SOURCE"] == str(Path(atlas.__file__).resolve().parents[2])
-    assert (Path(kw["env"]["POSE_EXPERIMENT"]) / "source_atlas_selection.json").is_file()
+    assert analysis_kw["env"]["POSE_EXPERIMENT"] == kw["env"]["POSE_EXPERIMENT"]
+    experiment_path = Path(kw["env"]["POSE_EXPERIMENT"])
+    assert (experiment_path / "source_atlas_selection.json").is_file()
+    assert json.loads((experiment_path / "slurm_jobs.json").read_text()) == {
+        "gpu_array_job_id": "9001", "analysis_job_id": "9002",
+        "analysis_dependency": "afterany:9001",
+    }
 
 
 def test_atlas_launcher_comparison_dynamic_array_and_budget(tmp_path, monkeypatch):
@@ -1248,14 +1268,20 @@ def test_atlas_launcher_comparison_dynamic_array_and_budget(tmp_path, monkeypatc
                              for rep in range(2))],
                 'sequences_per_backbone': 1, 'inverse_folder': 'boltzif',
             }))
+        if argv[0] == 'sbatch':
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout="8001\n" if "--array=0-7%1" in argv else "8002\n",
+            )
         return types.SimpleNamespace(returncode=0)
     monkeypatch.setattr(atlas.subprocess, 'run', fake_run)
     monkeypatch.setattr(atlas, 'shutil_which_sbatch', lambda: True)
     atlas.launch(args)
-    assert len(invocations) == 10  # prepare, eight condition preflights, sbatch
-    assert invocations[-1][0] == 'sbatch'
-    assert '--array=0-7%1' in invocations[-1]
-    assert sorted(cmd[-1] for cmd in invocations[1:-1]) == ['0','1','2','3','4','5','6','7']
+    assert len(invocations) == 11  # prepare, eight preflights, GPU array, CPU analysis
+    assert invocations[-2][0] == invocations[-1][0] == 'sbatch'
+    assert '--array=0-7%1' in invocations[-2]
+    assert '--dependency=afterany:8001' in invocations[-1]
+    assert sorted(cmd[-1] for cmd in invocations[1:-2]) == ['0','1','2','3','4','5','6','7']
 
 
 def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
@@ -1272,6 +1298,22 @@ def test_atlas_launcher_dry_run_selects_and_does_not_submit(tmp_path, capsys):
     atlas.launch(args)
     assert "DRY RUN" in capsys.readouterr().out
     assert not list((tmp_path / "test-work").iterdir())
+
+
+def test_sbatch_job_id_parsing():
+    import launch_from_atlas as atlas
+    assert atlas.parse_sbatch_job_id('23451\n') == '23451'
+    assert atlas.parse_sbatch_job_id('23451;milton\n') == '23451'
+    with pytest.raises(ValueError, match='Unexpected sbatch'):
+        atlas.parse_sbatch_job_id('Submitted batch job 23451')
+
+
+def test_auto_analysis_uses_cpu_partition_and_no_gpu():
+    script = Path(__file__).with_name("analyse.slurm").read_text()
+    assert "#SBATCH --partition=regular" in script
+    assert "#SBATCH --gres" not in script
+    assert 'container.sh" analyse' in script
+    assert '--experiment "$POSE_EXPERIMENT"' in script
 
 
 def test_milton_gpuq_explicitly_requests_one_a30():
