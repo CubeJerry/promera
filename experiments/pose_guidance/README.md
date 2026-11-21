@@ -67,13 +67,21 @@ These are geometric checks, not evidence of better affinity, neutralisation
 or experimentally validated binding. Avoid conflating the Pose Atlas display's
 reference angle (13.3 degrees) with deviation *from this new reference*.
 
-After the SLURM array completes (replace EXPERIMENT with the printed new path):
+**Analysis is automatic.** The launcher submits one CPU-only `regular`
+partition job dependent on `afterany` of the entire GPU array. It runs only
+after every GPU task finishes (including failed tasks) and produces the CSVs
+above without any additional command or active login session. Results and logs
+are stored inside the new timestamped experiment directory:
 
-```bash
-export POSE_WORK=/vast/scratch/users/chen.je/pose-guidance-work
-bash /vast/home/users/chen.je/promera-pose-guidance-035/experiments/pose_guidance/container.sh \
-  analyse --experiment "$POSE_WORK/EXPERIMENT"
-```
+- `analysis/angle_response.csv`, `analysis/structures.csv`, `analysis/comparison.csv`
+- `analysis/status.json`: `complete` only if all tasks finish and every
+  requested backbone is present; otherwise `incomplete` with task details
+- `analysis/errors.json` and `analysis-<jobid>.out`: parse errors and job log
+- `slurm_jobs.json`: GPU array ID, analysis job ID, and dependency
+
+An incomplete run still generates partial diagnostic reports but exits with a
+nonzero SLURM status, so failed GPU jobs cannot masquerade as a successful
+experiment. `--no-submit` intentionally skips **both** job submissions.
 
 ## Larger 0–20 degree site-matched comparison (B004 / G047 / 5_389)
 
