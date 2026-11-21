@@ -552,6 +552,18 @@ def comparison_summary(
         confidence_low, confidence_high = wilson95(primary_success, n)
         angles = [float(row['approach_degrees']) for row in outputs]
         contacts = [float(row['site_contact_fraction']) for row in outputs]
+        guided = [row for row in outputs if row.get('guide_approach_deviation_degrees') is not None]
+        errors = [float(row['guide_axis_error_degrees']) for row in guided
+                  if row.get('guide_axis_error_degrees') is not None]
+        polar_errors = [abs(float(row['approach_degrees']) -
+                            float(row['guide_approach_deviation_degrees'])) for row in guided]
+        planned = [float(row['guide_approach_deviation_degrees']) for row in guided]
+        observed = [float(row['approach_degrees']) for row in guided]
+        correlation = (
+            float(np.corrcoef(planned, observed)[0, 1])
+            if len(guided) >= 3 and np.std(planned) > 0 and np.std(observed) > 0
+            else None
+        )
         summaries.append({
             'arm': arm,
             'targeted_site_enabled': bool(task_rows[0]['targeted_site_enabled']),
@@ -571,6 +583,9 @@ def comparison_summary(
             'primary_hit_wilson95_low': confidence_low,
             'primary_hit_wilson95_high': confidence_high,
             'median_approach_degrees': statistics.median(angles) if angles else None,
+            'median_guide_axis_error_degrees': statistics.median(errors) if errors else None,
+            'median_abs_polar_error_degrees': statistics.median(polar_errors) if polar_errors else None,
+            'guide_recovered_polar_correlation': correlation,
             'median_source_site_contact_fraction': statistics.median(contacts) if contacts else None,
             'gpu_wall_seconds': sum(float(row['wall_seconds'] or 0) for row in task_rows),
         })
@@ -592,6 +607,40 @@ def comparison_summary(
             'proximity only; not an affinity, neutralization or refold success test.'
         ),
     }
+
+
+def angle_response(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Five-degree bins test whether generated backbones track *specific* guides."""
+    interval = manifest.get('angle_range_requested_degrees')
+    if not interval:
+        return []
+    lower, maximum = map(float, interval)
+    guides = [row for row in rows if row['kind'] == 'backbone' and row['arm'] == 'cone16'
+              and row.get('guide_approach_deviation_degrees') is not None]
+    summaries = []
+    while lower < maximum:
+        upper = min(lower + 5.0, maximum)
+        sample = [row for row in guides
+                  if lower <= float(row['guide_approach_deviation_degrees'])
+                  and (float(row['guide_approach_deviation_degrees']) < upper
+                       or upper == maximum and float(row['guide_approach_deviation_degrees']) <= upper)]
+        planned = [float(row['guide_approach_deviation_degrees']) for row in sample]
+        actual = [float(row['approach_degrees']) for row in sample]
+        errors = [float(row['guide_axis_error_degrees']) for row in sample
+                  if row.get('guide_axis_error_degrees') is not None]
+        summaries.append({
+            'guide_angle_min': lower, 'guide_angle_max': upper,
+            'observed_backbones': len(sample),
+            'median_guide_angle': statistics.median(planned) if planned else None,
+            'median_recovered_angle': statistics.median(actual) if actual else None,
+            'median_abs_polar_error_degrees': (
+                statistics.median(abs(a - b) for a, b in zip(planned, actual))
+                if sample else None
+            ),
+            'median_guide_axis_error_degrees': statistics.median(errors) if errors else None,
+        })
+        lower = upper
+    return summaries
 
 
 def analyse(root: Path) -> None:
@@ -742,6 +791,10 @@ def analyse(root: Path) -> None:
         'evaluated_angle_min_degrees', 'evaluated_angle_max_degrees', 'wall_seconds'])
     write_csv(destination / 'protenix_inputs.csv', list(exports.values()),
               ['name', 'sequence', 'promera_reference_cif', 'arm', 'replicate', 'iptm'])
+    write_csv(destination / 'angle_response.csv', angle_response(manifest, rows),
+              ['guide_angle_min', 'guide_angle_max', 'observed_backbones',
+               'median_guide_angle', 'median_recovered_angle',
+               'median_abs_polar_error_degrees', 'median_guide_axis_error_degrees'])
     if manifest.get('profile') == 'comparison':
         comparisons, effect = comparison_summary(manifest, rows, totals)
         write_csv(destination / 'comparison.csv', comparisons, [
@@ -751,6 +804,8 @@ def analyse(root: Path) -> None:
             'source_site_contact_3plus', 'primary_geometry_and_site_hits',
             'primary_hit_fraction', 'primary_hit_wilson95_low',
             'primary_hit_wilson95_high', 'median_approach_degrees',
+            'median_guide_axis_error_degrees', 'median_abs_polar_error_degrees',
+            'guide_recovered_polar_correlation',
             'median_source_site_contact_fraction', 'gpu_wall_seconds',
         ])
         write_json(destination / 'comparison.json', effect)
