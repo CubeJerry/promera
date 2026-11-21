@@ -135,6 +135,11 @@ def prepare(args: argparse.Namespace) -> None:
     if min(n, replicates, args.batch_size, args.sequences_per_backbone) < 1 or not 0 <= args.seed < 2**32 - replicates:
         raise ValueError('invalid budget, batch size or replicate seed')
     interval = parse_angle_range(getattr(args, 'angle_range', None))
+    angle_sampling = getattr(args, 'angle_sampling', 'uniform_solid_angle')
+    if angle_sampling not in ('uniform_solid_angle', 'stratified_degrees'):
+        raise ValueError('unsupported angular sampling policy')
+    if interval is None and angle_sampling != 'uniform_solid_angle':
+        raise ValueError('stratified angular sampling requires --angle-range')
     angle_shift = float(getattr(args, 'angle_translation_angstrom', 0.0))
     if not np.isfinite(angle_shift) or angle_shift < 0:
         raise ValueError('angle translation bound must be finite and nonnegative')
@@ -220,6 +225,7 @@ def prepare(args: argparse.Namespace) -> None:
             }
             if label == 'cone16':
                 job_cfg['pose_guidance']['approach_angle_range_degrees'] = list(interval)
+                job_cfg['pose_guidance']['angle_sampling'] = angle_sampling
             path = root / 'configs' / f'{len(jobs):03d}_{label}_rep{rep}.json'
             write_json(path, job_cfg)  # JSON is also valid YAML for OmegaConf.
             jobs.append({'index': len(jobs), 'arm': label, 'replicate': rep,
@@ -240,6 +246,7 @@ def prepare(args: argparse.Namespace) -> None:
                       'target_fit_rmsd_max': 3},
         'angular_reference': 'deviation_from_selected_source_CDR_to_framework_axis_after_target_alignment',
         'angle_range_requested_degrees': list(interval) if interval else None,
+        'angle_sampling': angle_sampling,
         'comparison_primary_contrast': (
             'targeted_only_vs_cone16_same_epitope_and_seeds'
             if args.profile == 'comparison' else None
@@ -362,6 +369,8 @@ def verify_all_proposed_guides(cfg: Any, plan: dict[str, Any]) -> dict[str, int]
             framework, _ = cone_placement(
                 source_fw, axis, seed, float(interval[0]), float(interval[1]),
                 float(setting.translation_angstrom), pivot=patch,
+                sampling_policy=str(setting.get('angle_sampling', 'uniform_solid_angle')),
+                sample_index=bidx, sample_count=requested, schedule_seed=int(setting.seed),
             )
         else:
             framework = jitter(
@@ -440,6 +449,7 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
               'design_sha256': digest(inspect.getfile(design)), 'weights': str(weights),
               'weights_size': weights.stat().st_size,
               'featurized_items': len(features), 'pair_count': int(cfg.pose_guidance.pairs),
+              'requested_angle_sampling': cfg.pose_guidance.get('angle_sampling', 'uniform_solid_angle'),
               'requested_approach_angle_range_degrees': (
                   OmegaConf.to_container(cfg.pose_guidance.approach_angle_range_degrees, resolve=True)
                   if cfg.pose_guidance.get('approach_angle_range_degrees') is not None else None
@@ -461,6 +471,8 @@ def preflight(root: Path, index: int, require_gpu: bool = False) -> dict[str, An
             'overflow_pairs': int(feat['pose_record']['overflow_guidance_pairs']),
             'max_distance_angstrom': feat['pose_record']['maximum_anchor_distance_angstrom'],
             'guide_angle_degrees': feat['pose_record'].get('guide_approach_deviation_degrees'),
+            'guide_stratum_rank': feat['pose_record'].get('guide_stratum_rank'),
+            'guide_azimuth_degrees': feat['pose_record'].get('guide_azimuth_degrees'),
         }
         for feat in features
     ]
@@ -761,6 +773,9 @@ def main() -> None:
                       help='comparison: number of nearest source-CDR antigen residues to target (default 7)')
     prep.add_argument('--angle-range', metavar='MIN:MAX',
                       help='source-relative angular guidance interval in degrees (e.g. 15:35)')
+    prep.add_argument('--angle-sampling', choices=('uniform_solid_angle', 'stratified_degrees'),
+                      default='uniform_solid_angle',
+                      help='stratified_degrees: even polar-angle coverage and dispersed azimuths')
     prep.add_argument('--angle-translation-angstrom', type=float, default=0.0,
                       help='maximum rigid translation of the angular guide (default: 0)')
     prep.add_argument('--backbones', type=int)
