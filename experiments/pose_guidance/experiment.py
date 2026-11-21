@@ -629,8 +629,11 @@ def analyse(root: Path) -> None:
             try:
                 observed_backbone = read_chains(backbone)
                 bt, bf, bb = observed_arrays(observed_backbone, plan)
+                guidance_file = backbone.parent / 'pose_guidance.json'
+                guidance = load_json(guidance_file) if guidance_file.is_file() else {}
                 bm = pose_metrics(plan['target_coords'], plan['source_framework_coords'], bt, bf,
-                                  plan['source_axis'], target_patch_center=patch_center)
+                                  plan['source_axis'], target_patch_center=patch_center,
+                                  guide_axis=guidance.get('guide_axis_xyz'))
                 site_metrics = site_contact_metrics(observed_backbone, plan)
                 angle_in_range = (
                     threshold['approach_degrees_min'] - 1e-5
@@ -643,12 +646,11 @@ def analyse(root: Path) -> None:
                 )
                 primary_hit = bool(angle_in_range and site_hits) if plan.get('targeted_site') else None
                 backbone_match = _passes_geometry(bm, threshold)
-                guidance_file = backbone.parent / 'pose_guidance.json'
-                guidance = load_json(guidance_file) if guidance_file.is_file() else {}
                 guide_fields = {
                     'guide_approach_deviation_degrees': guidance.get('guide_approach_deviation_degrees'),
                     'guide_azimuth_degrees': guidance.get('guide_azimuth_degrees'),
                     'guide_sampling_policy': guidance.get('guide_sampling_policy'),
+                    'guide_stratum_rank': guidance.get('guide_stratum_rank'),
                     'requested_guidance_pairs': guidance.get('requested_guidance_pairs'),
                     'informative_guidance_pairs': guidance.get('informative_guidance_pairs'),
                     'overflow_guidance_pairs': guidance.get('overflow_guidance_pairs'),
@@ -670,7 +672,8 @@ def analyse(root: Path) -> None:
                         chains = read_chains(cif)
                         rt, rf, rb = observed_arrays(chains, plan)
                         metrics = pose_metrics(plan['target_coords'], plan['source_framework_coords'], rt, rf,
-                                               plan['source_axis'], target_patch_center=patch_center)
+                                               plan['source_axis'], target_patch_center=patch_center,
+                                               guide_axis=guidance.get('guide_axis_xyz'))
                         refold_site_metrics = site_contact_metrics(chains, plan)
                         rotation, translation = align(rt, bt)
                         self_rmsd = rmsd(rb @ rotation + translation, bb)
@@ -720,7 +723,9 @@ def analyse(root: Path) -> None:
     write_csv(destination / 'structures.csv', rows, ['arm', 'replicate', 'kind', 'cif', 'sequence', 'iptm',
         'scDockQ_json', 'target_fit_rmsd', 'source_framework_rmsd', 'framework_internal_rmsd',
         'centroid_shift_angstrom', 'patch_radius_change_angstrom', 'body_rotation_degrees', 'approach_degrees',
+        'guide_axis_error_degrees',
         'guide_approach_deviation_degrees', 'guide_azimuth_degrees', 'guide_sampling_policy',
+        'guide_stratum_rank',
         'requested_guidance_pairs', 'informative_guidance_pairs', 'overflow_guidance_pairs',
         'maximum_anchor_distance_angstrom', 'targeted_site_enabled',
         'in_requested_angle', 'primary_hit',
