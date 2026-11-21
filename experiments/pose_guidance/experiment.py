@@ -828,10 +828,31 @@ def analyse(root: Path) -> None:
         ])
         write_json(destination / 'comparison.json', effect)
     write_json(destination / 'errors.json', errors)
-    print(json.dumps({'analysis': str(destination), 'geometry_matched_unique_sequences': len(exports),
-                      'parse_errors': len(errors), 'note': 'Exports are screening inputs, not validated binders or production passers.'}, indent=2))
-    if errors:
-        raise ValueError('analysis is partial; inspect analysis/errors.json before interpreting yields')
+    incomplete_jobs = [
+        {'index': row['index'], 'arm': row['arm'], 'replicate': row['replicate'],
+         'status': row['status'], 'missing_backbones': row['missing_backbones']}
+        for row in totals
+        if row['status'] != 'completed' or row['missing_backbones'] != 0
+    ]
+    complete = not incomplete_jobs and not errors
+    status = {
+        'status': 'complete' if complete else 'incomplete',
+        'requested_backbones': sum(row['requested_backbones'] for row in totals),
+        'generated_backbones': sum(row['generated_backbones'] for row in totals),
+        'incomplete_jobs': incomplete_jobs,
+        'parse_errors': len(errors),
+        'analysis_directory': str(destination),
+    }
+    write_json(destination / 'status.json', status)
+    print(json.dumps({
+        **status, 'geometry_matched_unique_sequences': len(exports),
+        'note': 'Exports are screening inputs, not validated binders or production passers.',
+    }, indent=2))
+    if not complete:
+        raise ValueError(
+            'pose-guidance analysis is incomplete; partial reports were written. '
+            'Inspect analysis/status.json and analysis/errors.json before interpreting yields'
+        )
 
 
 def main() -> None:
