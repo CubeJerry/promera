@@ -209,6 +209,7 @@ def launch(args: argparse.Namespace) -> None:
     print("Backbone SHA256:", _sha256(selection["canonical_backbone"]), flush=True)
     print("Matching batch configuration:", selection["base_config"], flush=True)
     print("Source-relative angle interval:", interval, "degrees", flush=True)
+    print("Angular sampling:", args.angle_sampling, flush=True)
     print("Experimental profile:", profile, flush=True)
     print("New experiment directory:", experiment, flush=True)
     if args.dry_run:
@@ -222,6 +223,7 @@ def launch(args: argparse.Namespace) -> None:
         "--out", str(experiment),
         "--profile", profile,
         "--angle-range", interval,
+        "--angle-sampling", args.angle_sampling,
     ]
     if getattr(args, "backbones", None) is not None:
         prepare_command.extend(["--backbones", str(args.backbones)])
@@ -285,6 +287,9 @@ def main() -> int:
     parser.add_argument("--run", required=True, help="Completed NOMINEE run root containing analysis/epitope_scan")
     parser.add_argument("--pose-id", default=DEFAULT_POSE)
     parser.add_argument("--angle-range", default="15:35", help="Deviation from selected VHH approach (degrees)")
+    parser.add_argument("--angle-sampling", choices=("uniform_solid_angle", "stratified_degrees"),
+                        default="uniform_solid_angle",
+                        help="stratified_degrees covers equal angular intervals and azimuths")
     parser.add_argument("--profile", choices=("smoke", "comparison"), default="smoke",
                         help="smoke: three-arm small run; comparison: 4-arm same-site benchmark")
     parser.add_argument("--backbones", type=int,
