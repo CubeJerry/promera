@@ -4,6 +4,77 @@
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
 
+## G049 / 9_370: stratified 0–35-degree tilt-response pilot
+
+This isolated experiment uses the **canonical CDR-driven Pose Atlas backbone**
+`B004__G049__9_370` (not a sequence-conditioned refold) as its reference.
+The launcher verifies the catalog row, classification, source SHA-256 and the
+original `promera_batch_9.yaml` before touching SLURM.
+
+Unlike the previous uniform-solid-angle policy, `stratified_degrees` assigns
+32 guide orientations per replicate across seven 5-degree bands, with **4 or 5
+guides in each band**. The azimuths follow a dispersed golden-angle schedule
+within each band, using independent replicate phases. This varies approach
+direction but does not add a separate roll about the VHH approach axis.
+
+Run on Milton from a **new** checkout, leaving the earlier checkout unchanged:
+
+```bash
+cd /vast/home/users/chen.je
+git clone -b experiment/stratified-cone-035-pose9370 --single-branch \
+  https://github.com/CubeJerry/promera.git promera-pose-guidance-035
+module load apptainer
+
+SCRIPT=/vast/home/users/chen.je/promera-pose-guidance-035/experiments/pose_guidance/launch_from_atlas.py
+WORK=/vast/scratch/users/chen.je/pose-guidance-work
+RUN=/vast/scratch/users/chen.je/sandbox/nominee-runs/poseguide
+
+python3 "$SCRIPT" \
+  --run "$RUN" --work "$WORK" \
+  --pose-id B004__G049__9_370 \
+  --profile comparison \
+  --angle-range 0:35 --angle-sampling stratified_degrees \
+  --site-residues 5 --backbones 32 --replicates 3 \
+  --dry-run
+
+# Remove --dry-run for full preparation, CPU preflight, and submission.
+python3 "$SCRIPT" \
+  --run "$RUN" --work "$WORK" \
+  --pose-id B004__G049__9_370 \
+  --profile comparison \
+  --angle-range 0:35 --angle-sampling stratified_degrees \
+  --site-residues 5 --backbones 32 --replicates 3
+```
+
+There are four arms (control, targeted-only, original-pose anchors16,
+stratified cone16) and three replicate jobs per arm: 384 requested backbones
+in total. The cone contributes 96 independent guides. Array concurrency is
+one A30 task at a time; the previous output directories are not overwritten.
+
+**Tilt-response diagnostic:** `analysis/structures.csv` contains both the
+requested deviation (`guide_approach_deviation_degrees`) and the actual,
+target-aligned generated deviation (`approach_degrees`). It now also records
+`guide_axis_error_degrees`: the full 3D angular separation between the
+requested guide axis and the recovered VHH axis after antigen alignment.
+This distinguishes true direction following from simply landing somewhere in
+the 0–35-degree interval. `analysis/angle_response.csv` reports per-5-degree
+band counts, median requested/recovered deviations and both errors.
+`analysis/comparison.csv` compares the guided arm against matched targeted
+and fixed-pose controls. In particular, check higher-angle bins rather than
+relying on low-angle apparent agreement near the reference.
+
+These are geometric checks, not evidence of better affinity, neutralisation
+or experimentally validated binding. Avoid conflating the Pose Atlas display's
+reference angle (13.3 degrees) with deviation *from this new reference*.
+
+After the SLURM array completes (replace EXPERIMENT with the printed new path):
+
+```bash
+export POSE_WORK=/vast/scratch/users/chen.je/pose-guidance-work
+bash /vast/home/users/chen.je/promera-pose-guidance-035/experiments/pose_guidance/container.sh \
+  analyse --experiment "$POSE_WORK/EXPERIMENT"
+```
+
 ## Larger 0–20 degree site-matched comparison (B004 / G047 / 5_389)
 
 The original two-backbone smoke established that sparse pose distances can
