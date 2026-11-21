@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -107,12 +108,16 @@ def cone_placement(
     max_degrees: float,
     translation: float = 0.0,
     pivot: Any | None = None,
-) -> tuple[np.ndarray, dict[str, float | str]]:
-    """Sample a target-relative approach cone around the selected source axis.
+    sampling_policy: str = "uniform_solid_angle",
+    sample_index: int | None = None,
+    sample_count: int | None = None,
+    schedule_seed: int = 0,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Rotate the source guide about the antigen patch, without added VHH roll.
 
-    Polar deviation is uniformly distributed in solid angle, not in degrees;
-    azimuth is uniform. No atom-wise noise or framework-template conditioning.
-    The guide is a *soft* conditioning input, never a guarantee of output angle.
+    Existing solid-angle sampling is preserved by default. The opt-in stratified
+    policy covers equal *degree* intervals and a low-discrepancy azimuth spiral.
+    The guide is soft conditioning, never a guarantee of recovered orientation.
     """
     arr = xyz(coords)
     axis = np.asarray(source_axis, dtype=float)
@@ -126,10 +131,30 @@ def cone_placement(
         raise ValueError("invalid approach-angle interval or translation bounds")
     source = axis / np.linalg.norm(axis)
     rng = np.random.default_rng(seed)
-    cos_min = np.cos(np.deg2rad(max_degrees))
-    cos_max = np.cos(np.deg2rad(min_degrees))
-    theta = float(np.arccos(np.clip(rng.uniform(cos_min, cos_max), -1, 1)))
-    azimuth = float(rng.uniform(0, 2 * np.pi))
+    rank = None
+    if sampling_policy == "uniform_solid_angle":
+        cos_min = np.cos(np.deg2rad(max_degrees))
+        cos_max = np.cos(np.deg2rad(min_degrees))
+        theta = float(np.arccos(np.clip(rng.uniform(cos_min, cos_max), -1, 1)))
+        azimuth = float(rng.uniform(0, 2 * np.pi))
+    elif sampling_policy == "stratified_degrees":
+        if (type(sample_index) is not int or type(sample_count) is not int
+                or sample_count < 1 or not 0 <= sample_index < sample_count):
+            raise ValueError("stratified angles require a valid backbone index and count")
+        # A coprime modular stride scatters angle strata across backbone indices.
+        golden = (np.sqrt(5.0) - 1.0) / 2.0
+        stride = max(1, int(round(sample_count * golden)))
+        while math.gcd(stride, sample_count) != 1:
+            stride += 1
+        rank = (sample_index * stride + int(schedule_seed)) % sample_count
+        degrees = min_degrees + (max_degrees - min_degrees) * (
+            (rank + rng.random()) / sample_count
+        )
+        theta = float(np.deg2rad(degrees))
+        phase = np.random.default_rng(int(schedule_seed)).random()
+        azimuth = float(2 * np.pi * ((rank * golden + phase) % 1.0))
+    else:
+        raise ValueError(f"unrecognized angular sampling policy: {sampling_policy}")
     basis = np.zeros(3)
     basis[int(np.argmin(np.abs(source)))] = 1.0
     u = np.cross(source, basis)
@@ -162,7 +187,9 @@ def cone_placement(
         "guide_approach_deviation_degrees": float(achieved),
         "guide_azimuth_degrees": float(np.rad2deg(azimuth)),
         "guide_translation_angstrom": float(np.linalg.norm(shift)),
-        "guide_sampling_policy": "uniform_solid_angle",
+        "guide_sampling_policy": sampling_policy,
+        "guide_stratum_rank": rank,
+        "guide_axis_xyz": desired.tolist(),
         "guide_pivot": "framework_centroid" if pivot is None else "antigen_patch_centroid",
     }
 
@@ -275,7 +302,8 @@ def rmsd(first: Any, second: Any) -> float:
 
 def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
                  observed_fw: Any, reference_axis: Any,
-                 target_patch_center: Any | None = None) -> dict[str, float]:
+                 target_patch_center: Any | None = None,
+                 guide_axis: Any | None = None) -> dict[str, float | None]:
     """Separate internal shape, body rotation, approach direction and displacement."""
     rt, rf, ot, of = map(xyz, (reference_target, reference_fw, observed_target, observed_fw))
     rotation, shift = align(ot, rt)
@@ -285,6 +313,16 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
     if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-6:
         raise ValueError('reference approach axis is undefined')
     axis = axis / np.linalg.norm(axis)
+    recovered_axis = axis @ body_rotation
+    guide_axis_error = None
+    if guide_axis is not None:
+        expected = np.asarray(guide_axis, dtype=float)
+        if expected.shape != (3,) or not np.isfinite(expected).all() or np.linalg.norm(expected) < 1e-6:
+            raise ValueError("guide axis must be a finite nonzero xyz vector")
+        expected /= np.linalg.norm(expected)
+        guide_axis_error = float(np.rad2deg(np.arccos(
+            np.clip(recovered_axis @ expected, -1, 1)
+        )))
     radial_change = None
     if target_patch_center is not None:
         pivot = np.asarray(target_patch_center, dtype=float)
@@ -302,7 +340,8 @@ def pose_metrics(reference_target: Any, reference_fw: Any, observed_target: Any,
         'centroid_shift_angstrom': float(np.linalg.norm(fw.mean(0) - rf.mean(0))),
         'body_rotation_degrees': float(np.rad2deg(np.arccos(np.clip((np.trace(body_rotation) - 1) / 2, -1, 1)))),
         # Transport a fixed source-defined axis; do not redefine it from new CDRs.
-        'approach_degrees': float(np.rad2deg(np.arccos(np.clip(axis @ (axis @ body_rotation), -1, 1)))),
+        'approach_degrees': float(np.rad2deg(np.arccos(np.clip(axis @ recovered_axis, -1, 1)))),
+        'guide_axis_error_degrees': guide_axis_error,
     }
 
 
