@@ -81,7 +81,7 @@ if [[ -n "${POSE_EXTRA_BINDS:-}" ]]; then binds+=",$POSE_EXTRA_BINDS"; fi
 # The working directory is explicitly bound; suppress the implicit CWD mount.
 entry=(/opt/pose_guidance/experiment.py)
 overlay=""
-if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == approach-finish || "${1:-}" == approach-setup ]]; then
+if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == approach-finish || "${1:-}" == approach-setup || "${1:-}" == approach-setups ]]; then
     action=$1
     shift
     if [[ "$action" == approach-preview ]]; then set -- "$@" --preview; fi
@@ -89,6 +89,7 @@ if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == ap
     binds+=",$HERE/../../promera_angles:/opt/angle_overlay/promera_angles:ro"
     overlay="/opt/angle_overlay:"
     entry=(-m promera_angles.run)
+    if [[ "$action" == approach-setups ]]; then entry=(-m promera_angles.setup_input); fi
     if [[ "$action" == approach-setup ]]; then
         entry=(-m promera_angles.cif_input)
         binds+=",$HERE/../../examples/design_vhh.yaml:/opt/angle-defaults.yaml:ro"
@@ -101,6 +102,7 @@ for var in CUDA_VISIBLE_DEVICES SLURM_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_
     if [[ -n "${!var:-}" ]]; then args+=(--env "$var=${!var}"); fi
 done
 args+=(--env "POSE_RUNTIME_IMAGE=$IMAGE")
+if [[ "${action:-}" == approach-setups ]]; then args+=(--env "ANGLE_SUBMIT_HOME=$HOME" --env "USER=${USER:-$(id -un)}"); fi
 if commit=$(git -C "$HERE" rev-parse HEAD 2>/dev/null); then args+=(--env "POSE_EXPERIMENT_COMMIT=$commit"); fi
 args+=(--env "PYTHONPATH=${overlay}/opt/pose_guidance:/opt/nominee/component/promera:/opt/nominee/repo")
 args+=(--env "PROMERA_WEIGHTS=/opt/nominee/assets/checkpoints/promera_2606.ckpt")

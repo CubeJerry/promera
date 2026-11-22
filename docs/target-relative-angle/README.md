@@ -2,6 +2,14 @@
 
 Use the ordinary VHH targeted-design input. Its target schema, selected chains, native epitope flags, framework, CDR lengths, inverse folder and ordinary target-template conditioning apply to both arms. No Atlas run, source complex or reference nanobody is required.
 
+## Submit a pair from saved NOMINEE setups
+
+```bash
+bash experiments/pose_guidance/launch_approach.sh antigen_setup.yaml nanobody_setup.yaml '125,130-135'
+```
+
+The positional residue selection replaces the saved epitope for this run. NOMINEE prepares the target using the saved chain selection, exclusions, template correspondence and numbering mode (author by default for legacy files). Bare numbers address the saved primary chain. Use chain-qualified groups to select residues on other saved chains. The nanobody setup supplies the framework and CDR ranges; missing lengths default to 6–8, 6–8 and 8–20. Relative structural paths resolve beside the antigen setup. Both source setups remain intact. The budgets, optional flags and analysis outputs below apply to this form too.
+
 ## Submit a pair from an antigen CIF
 
 From the feature checkout on a login node with the managed NOMINEE installation:

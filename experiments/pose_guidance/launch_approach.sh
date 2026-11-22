@@ -2,6 +2,7 @@
 # Host-side launcher for NOMINEE's existing Promera image and weights.
 set -euo pipefail
 usage() {
+    echo "Usage: $0 ANTIGEN_SETUP.yaml NANOBODY_SETUP.yaml RESIDUES [options]" >&2
     echo "Usage: $0 TARGET.cif AUTHOR_RESIDUES [--chains A,B] [--backbones N] [--replicates N]" >&2
     echo "Usage: $0 BASE_TASK_YAML NEW_OUTPUT_DIR [--angle MIN MAX] [--paired] [--backbones N] [--replicates N] [--preview] [--target-structure CIF]" >&2
 }
@@ -9,7 +10,13 @@ if [[ "${1:-}" == --help ]]; then usage; exit 0; fi
 if [[ $# -lt 2 ]]; then usage; exit 2; fi
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 base=$(realpath -e -- "$1")
-if [[ "$base" == *.cif || "$base" == *.mmcif ]]; then
+nano=""
+if [[ "$base" =~ \.(yaml|yml|json)$ && "$2" =~ \.(yaml|yml|json)$ && -f "$2" ]]; then
+    nano=$(realpath -e -- "$2")
+    [[ $# -ge 3 ]] || { usage; exit 2; }
+    shift
+fi
+if [[ -n "$nano" || "$base" == *.cif || "$base" == *.mmcif ]]; then
     residues=$2
     shift 2
     work_parent="${ANGLE_WORK_DIR:-/vast/scratch/users/$USER}"
@@ -26,7 +33,20 @@ if [[ "$base" == *.cif || "$base" == *.mmcif ]]; then
     done
     if ! command -v apptainer >/dev/null; then module load apptainer; fi
     echo "Run directory: $output"
-    bash "$here/container.sh" approach-setup "$base" "$residues" "$output" /opt/angle-defaults.yaml "${chains[@]}"
+    if [[ -n "$nano" ]]; then
+        (( ${#chains[@]} == 0 )) || { echo "Select chains in the antigen setup file." >&2; exit 2; }
+        export POSE_EXTRA_BINDS="${POSE_EXTRA_BINDS:+$POSE_EXTRA_BINDS,}$nano:$nano:ro"
+        setup_args=("$base" "$nano" "$residues" "$output")
+        refs=$(bash "$here/container.sh" approach-setups "${setup_args[@]}" --list-inputs)
+        while IFS= read -r path; do
+            [[ -n "$path" ]] || continue
+            [[ -f "$path" ]] || { echo "Missing setup input: $path" >&2; exit 2; }
+            export POSE_EXTRA_BINDS+=",$path:$path:ro"
+        done <<< "$refs"
+        bash "$here/container.sh" approach-setups "${setup_args[@]}"
+    else
+        bash "$here/container.sh" approach-setup "$base" "$residues" "$output" /opt/angle-defaults.yaml "${chains[@]}"
+    fi
     base="$output/inputs/targeted.json"
     set -- --auto-msa "${options[@]}"
 else

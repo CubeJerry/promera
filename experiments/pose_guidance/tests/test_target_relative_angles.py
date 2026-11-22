@@ -448,3 +448,53 @@ def test_cif_pair_entry(tmp_path):
     assert prepare(target, "42", single, defaults, chains="Left")[
         "epitope_residue_map"
     ] == {"Left": [5]}
+
+
+def test_nominee_setups_replace_site_preserve_chain_and_framework(tmp_path):
+    pytest.importorskip("utils.nominee_core.promera_setup")
+    from promera_angles.setup_input import prepare_setups
+    from promera_angles.structures import resolve_target
+
+    plan = fixture()
+    xyz = np.array(plan["coords"])
+    cif = tmp_path / "assembly.cif"
+    write_cif(
+        cif,
+        {
+            name: (seq, xyz[[i for i, k in enumerate(plan["keys"]) if k[0] == name]])
+            for name, seq in plan["sequences"].items()
+        },
+    )
+    # Bio.PDB's full structure reader additionally requires the B-factor column.
+    lines = cif.read_text().splitlines()
+    cif.write_text(
+        "\n".join(
+            line[:-1] + "20 1"
+            if line.startswith("ATOM ")
+            else line.replace(
+                "_atom_site.pdbx_PDB_model_num",
+                "_atom_site.B_iso_or_equiv\n_atom_site.pdbx_PDB_model_num",
+            )
+            for line in lines
+        )
+        + "\n"
+    )
+    antigen = tmp_path / "antigen.yaml"
+    antigen.write_text(
+        "antigen_cif: assembly.cif\ntarget_chain: Left\nepitope_numbering: author\nepitope_residues: 42\n"
+    )
+    nano = tmp_path / "nano.yaml"
+    nano.write_text(f"framework: {PATTERN}\ncdrh3_length: 9-19\n")
+    cfg = prepare_setups(antigen, nano, "60", tmp_path)
+    assert cfg["target_chains"] == ["Left"]
+    assert cfg["binder"]["framework"] == PATTERN
+    assert cfg["binder"]["cdr_lengths"] == {
+        "cdrh1": [6, 8],
+        "cdrh2": [6, 8],
+        "cdrh3": [9, 19],
+    }
+    resolved = resolve_target(cfg)
+    assert [resolved["labels"][i]["auth_seq_id"] for i in resolved["selected"]] == [
+        "60"
+    ]
+    assert "epitope_residues: 42" in antigen.read_text()
