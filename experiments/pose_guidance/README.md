@@ -83,6 +83,29 @@ An incomplete run still generates partial diagnostic reports but exits with a
 nonzero SLURM status, so failed GPU jobs cannot masquerade as a successful
 experiment. `--no-submit` intentionally skips **both** job submissions.
 
+## Visualise requested tilt bands with fixed-reference controls
+
+After the G049 / 9_370 experiment finishes, the standalone standard-library
+exporter chooses one generated backbone per **requested** 5-degree guide band
+(0–5, 5–10, ..., 30–35). Selection is based only on how close the *requested*
+angle is to the bin midpoint; no selection on recovered tilt, confidence or
+contact quality. Each example is paired with the fixed-reference `anchors16`
+backbone from the identical replicate and `backbone_idx`. Run:
+
+```bash
+cd /vast/home/users/chen.je
+git -C promera-pose-guidance-035 pull --ff-only
+python3 promera-pose-guidance-035/experiments/pose_guidance/export_requested_tilt_pairs.py \
+  /vast/scratch/users/chen.je/pose-guidance-work/B004__G049__9_370-angle-0-35-comparison-20261121-141409
+```
+
+This writes `seven_requested_tilt_pairs.zip` inside the experiment, with 14
+original generation CIFs, `selections.csv` containing requested and recovered
+angles, and a PyMOL `overlay.pml` that superposes antigen chains. Colored
+nanobodies are guided examples; grey matched controls can be enabled from the
+object panel. Refolds are intentionally excluded. Use `--dry-run` to inspect
+the seven choices without needing CIFs.
+
 ## Larger 0–20 degree site-matched comparison (B004 / G047 / 5_389)
 
 The original two-backbone smoke established that sparse pose distances can
