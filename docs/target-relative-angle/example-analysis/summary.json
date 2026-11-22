@@ -1,0 +1,172 @@
+{
+  "arms": {
+    "ordinary": {
+      "expected": 6,
+      "generated": 6,
+      "spatial_deg": {
+        "measured": 6,
+        "min": 15.04380745226958,
+        "q25": 25.79378721211962,
+        "median": 55.543787832792646,
+        "q75": 65.79379361760994,
+        "max": 70.04376766907215,
+        "mean": 46.87712222300633,
+        "in_interval": 2,
+        "occupancy": 0.3333333333333333,
+        "occupancy_bounds_all_expected": [
+          0.3333333333333333,
+          0.3333333333333333
+        ]
+      },
+      "facing_deg": {
+        "measured": 6,
+        "min": 12.043764319096523,
+        "q25": 25.043820095491725,
+        "median": 61.54380166564276,
+        "q75": 71.04381489893393,
+        "max": 75.04378902818459,
+        "mean": 49.54380037122872,
+        "in_interval": 2,
+        "occupancy": 0.3333333333333333,
+        "occupancy_bounds_all_expected": [
+          0.3333333333333333,
+          0.3333333333333333
+        ]
+      },
+      "pointing_to_patch_deg": {
+        "measured": 6,
+        "min": 7.999977933356975,
+        "q25": 16.749977855399074,
+        "median": 42.999994542178285,
+        "q75": 55.000007242252195,
+        "max": 59.00001583440395,
+        "mean": 36.66666110347783,
+        "in_interval": 2,
+        "occupancy": 0.3333333333333333,
+        "occupancy_bounds_all_expected": [
+          0.3333333333333333,
+          0.3333333333333333
+        ]
+      },
+      "cdr_contact_fraction": {
+        "measured": 4,
+        "min": 0.25,
+        "q25": 0.25,
+        "median": 0.625,
+        "q75": 1.0,
+        "max": 1.0,
+        "mean": 0.625
+      }
+    },
+    "guided": {
+      "expected": 6,
+      "generated": 6,
+      "spatial_deg": {
+        "measured": 6,
+        "min": 2.043790727720098,
+        "q25": 4.543780102559187,
+        "median": 9.54377715193798,
+        "q75": 30.293803086608705,
+        "max": 38.04380367826969,
+        "mean": 16.54379025457738,
+        "in_interval": 4,
+        "occupancy": 0.6666666666666666,
+        "occupancy_bounds_all_expected": [
+          0.6666666666666666,
+          0.6666666666666666
+        ]
+      },
+      "facing_deg": {
+        "measured": 6,
+        "min": 5.043792567753655,
+        "q25": 11.293786252581354,
+        "median": 27.54384074048008,
+        "q75": 61.043784649599644,
+        "max": 73.04378707136621,
+        "mean": 35.210465860444664,
+        "in_interval": 2,
+        "occupancy": 0.3333333333333333,
+        "occupancy_bounds_all_expected": [
+          0.3333333333333333,
+          0.3333333333333333
+        ]
+      },
+      "pointing_to_patch_deg": {
+        "measured": 6,
+        "min": 2.9999836105766433,
+        "q25": 4.749992173710487,
+        "median": 9.999966373519493,
+        "q75": 49.74998831120926,
+        "max": 63.00000637411983,
+        "mean": 25.333319854880354,
+        "in_interval": 4,
+        "occupancy": 0.6666666666666666,
+        "occupancy_bounds_all_expected": [
+          0.6666666666666666,
+          0.6666666666666666
+        ]
+      },
+      "cdr_contact_fraction": {
+        "measured": 4,
+        "min": 1.0,
+        "q25": 1.0,
+        "median": 1.0,
+        "q75": 1.0,
+        "max": 1.0,
+        "mean": 1.0
+      }
+    }
+  },
+  "guided_minus_ordinary": {
+    "spatial_deg": {
+      "matched_pairs": 6,
+      "matched_replicates": 2,
+      "mean_difference": -30.333331968428954,
+      "bootstrap95": [
+        -30.33333851260951,
+        -30.3333254242484
+      ],
+      "occupancy_difference": 0.3333333333333333,
+      "occupancy_bootstrap95": [
+        0.3333333333333333,
+        0.3333333333333333
+      ]
+    },
+    "facing_deg": {
+      "matched_pairs": 6,
+      "matched_replicates": 2,
+      "mean_difference": -14.333334510784065,
+      "bootstrap95": [
+        -14.333337990083024,
+        -14.333331031485107
+      ],
+      "occupancy_difference": 0.0,
+      "occupancy_bootstrap95": [
+        0.0,
+        0.0
+      ]
+    },
+    "cdr_contact_fraction": {
+      "matched_pairs": 2,
+      "matched_replicates": 2,
+      "mean_difference": 0.75,
+      "bootstrap95": [
+        0.75,
+        0.75
+      ]
+    }
+  },
+  "uncertainty_unit": "paired replicate; percentile bootstrap",
+  "interval_deg": [
+    0,
+    20
+  ],
+  "available_refolds": 4,
+  "backbones_with_refolds": 4,
+  "measurement_units": {
+    "angles": "degrees",
+    "lengths": "angstrom"
+  },
+  "contact_definition": "unique represented binder residues within 5 \u00c5 of a represented antigen heavy atom",
+  "interpretation": "predicted structural geometry; binding requires independent experimental evidence"
+}

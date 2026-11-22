@@ -165,3 +165,7 @@ MIT. Other licenses may apply to third-party source code noted in comments / fil
 ## Acknowledgements
 
 Parts of this package were started from https://github.com/jwohlwend/boltz/, https://github.com/lucidrains/alphafold3-pytorch/, and https://github.com/aqlaboratory/openfold/. A big thanks to the developers of these open-source libraries.
+
+## Optional target-relative approach angle
+
+Ordinary VHH targeted design can take a patch-relative angular preference. The [launch and analysis guide](docs/target-relative-angle/README.md) includes a paired Slurm command, geometric definitions and synthetic example outputs.

@@ -25,6 +25,20 @@ model_cfg = OmegaConf.merge(
 )
 task_cfg = OmegaConf.merge(OmegaConf.load(args.task_config), OmegaConf.from_cli(extra))
 
+# Opt-in only. The ordinary CLI, including its output layout, remains the
+# entry point. Child jobs carry angle_trial and cannot re-enter this wrapper.
+if args.task == "promera.inference.Design" and (task_cfg.get("approach_angle") or {}).get("enabled", False):
+    from promera_angles.run import execute
+
+    execute(
+        OmegaConf.to_container(task_cfg, resolve=True),
+        task_cfg.output,
+        OmegaConf.to_container(task_cfg.approach_angle, resolve=True),
+        weights=args.weights,
+        model_settings=OmegaConf.to_container(model_cfg, resolve=True),
+    )
+    raise SystemExit(0)
+
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader

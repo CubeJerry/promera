@@ -62,15 +62,16 @@ def xyz(value: Any) -> np.ndarray:
     return arr
 
 
-def farthest_points(coords: Any, count: int = 4) -> list[int]:
+def farthest_points(coords: Any, count: int = 4, *, tie_tolerance: float = 0.0) -> list[int]:
     arr = xyz(coords)
     if len(arr) < count:
         raise ValueError(f'need at least {count} coordinate-bearing landmarks')
-    selected = [int(np.argmin(np.sum((arr - arr.mean(0)) ** 2, axis=1)))]
+    center_d2 = np.sum((arr - arr.mean(0)) ** 2, axis=1)
+    selected = [int(np.flatnonzero(center_d2 <= center_d2.min() + tie_tolerance)[0])]
     while len(selected) < count:
         d2 = np.sum((arr[:, None] - arr[selected][None, :]) ** 2, axis=-1).min(1)
         d2[selected] = -1
-        selected.append(int(np.argmax(d2)))
+        selected.append(int(np.flatnonzero(d2 >= d2.max() - tie_tolerance)[0]))
     if np.linalg.matrix_rank(arr[selected] - arr[selected].mean(0), tol=1e-6) < 2:
         raise ValueError('landmarks are collinear; orientation is not identifiable')
     return selected
