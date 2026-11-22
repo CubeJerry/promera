@@ -81,7 +81,7 @@ if [[ -n "${POSE_EXTRA_BINDS:-}" ]]; then binds+=",$POSE_EXTRA_BINDS"; fi
 # The working directory is explicitly bound; suppress the implicit CWD mount.
 entry=(/opt/pose_guidance/experiment.py)
 overlay=""
-if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == approach-finish ]]; then
+if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == approach-finish || "${1:-}" == approach-setup ]]; then
     action=$1
     shift
     if [[ "$action" == approach-preview ]]; then set -- "$@" --preview; fi
@@ -89,6 +89,10 @@ if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == ap
     binds+=",$HERE/../../promera_angles:/opt/angle_overlay/promera_angles:ro"
     overlay="/opt/angle_overlay:"
     entry=(-m promera_angles.run)
+    if [[ "$action" == approach-setup ]]; then
+        entry=(-m promera_angles.cif_input)
+        binds+=",$HERE/../../examples/design_vhh.yaml:/opt/angle-defaults.yaml:ro"
+    fi
 fi
 args=(exec --cleanenv --no-mount cwd --home "$WORK/.home:$WORK/.home" --bind "$binds" --pwd "$WORK")
 # CPU preparation and analysis do not require a GPU allocation.

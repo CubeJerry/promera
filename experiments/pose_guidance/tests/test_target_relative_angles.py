@@ -409,3 +409,42 @@ def test_installed_native_features(tmp_path, multichain):
         )
     )
     assert len(m[0]["restype"]) == len(SEQUENCE)
+
+
+def test_cif_pair_entry(tmp_path):
+    pytest.importorskip("utils.nominee_core.antigen")
+    from promera_angles.cif_input import prepare
+    from promera_angles.structures import resolve_target
+
+    plan = fixture()
+    target = tmp_path / "author.cif"
+    tc = np.array(plan["coords"])
+    chains = {
+        name: (seq, tc[[i for i, k in enumerate(plan["keys"]) if k[0] == name]])
+        for name, seq in plan["sequences"].items()
+    }
+    write_cif(target, chains)
+    selection = ";".join(
+        f"{plan['keys'][i][0]}:{plan['keys'][i][1] + 37}" for i in plan["selected"]
+    )
+    defaults = Path(__file__).resolve().parents[3] / "examples" / "design_vhh.yaml"
+    cfg = prepare(target, selection, tmp_path, defaults)
+    actual = resolve_target(cfg)
+    assert {actual["keys"][i] for i in actual["selected"]} == {
+        plan["keys"][i] for i in plan["selected"]
+    }
+    assert cfg["approach_angle"]["paired"] and cfg["num_backbones"] == 1000
+    assert cfg["binder"]["cdr_lengths"] == {
+        "cdrh1": [6, 8],
+        "cdrh2": [6, 8],
+        "cdrh3": [8, 20],
+    }
+    other = tmp_path / "ambiguous"
+    other.mkdir()
+    with pytest.raises(ValueError, match="qualify"):
+        prepare(target, "42", other, defaults)
+    single = tmp_path / "single"
+    single.mkdir()
+    assert prepare(target, "42", single, defaults, chains="Left")[
+        "epitope_residue_map"
+    ] == {"Left": [5]}

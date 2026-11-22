@@ -2,7 +2,19 @@
 
 Use the ordinary VHH targeted-design input. Its target schema, selected chains, native epitope flags, framework, CDR lengths, inverse folder and ordinary target-template conditioning apply to both arms. No Atlas run, source complex or reference nanobody is required.
 
-## Launch on Slurm with the installed NOMINEE image
+## Submit a pair from an antigen CIF
+
+From the feature checkout on a login node with the managed NOMINEE installation:
+
+```bash
+bash experiments/pose_guidance/launch_approach.sh /path/to/antigen.cif 125
+```
+
+For an assembly use author chain IDs, e.g. `'A:125,130-135;B:41'`. All protein chains in the antigen CIF form the target by default. Use `--chains A,B` to select a subset. A bare residue number is accepted for a single selected protein chain. The generated task uses the shipped VHH framework and SolubleMPNN, CDR1/2 lengths 6–8, CDR3 lengths 8–20, the 0–20° interval and 1,000 backbones per arm across ten matched replicates. Override the budget, angle or replicates with the ordinary launcher flags.
+
+The launcher prints a unique scratch run directory. It saves the input CIF, resolved task and schema under `inputs/` and reports under `analysis/`. Set `ANGLE_WORK_DIR` to choose a different output parent. CIF preparation reuses accessible target MSAs and uses the usual ColabFold MSA service for sequences missing from cache. Add `--preview` for a CPU geometry check without fetching alignments or submitting jobs.
+
+## Launch from a task YAML with the installed NOMINEE image
 
 From the Promera feature checkout, supply an ordinary Promera **backend task** YAML/JSON and a new output directory. A freshly authored native task or a NOMINEE `promera/promera_batch_1.yaml` works. The target schema, resolved antigen mmCIF and usual MSA cache must be readable. The launcher reuses the current image, weights and assets from the NOMINEE site configuration. It does not fetch missing target MSAs.
 

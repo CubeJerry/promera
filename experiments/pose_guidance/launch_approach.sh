@@ -2,18 +2,40 @@
 # Host-side launcher for NOMINEE's existing Promera image and weights.
 set -euo pipefail
 usage() {
+    echo "Usage: $0 TARGET.cif AUTHOR_RESIDUES [--chains A,B] [--backbones N] [--replicates N]" >&2
     echo "Usage: $0 BASE_TASK_YAML NEW_OUTPUT_DIR [--angle MIN MAX] [--paired] [--backbones N] [--replicates N] [--preview] [--target-structure CIF]" >&2
 }
 if [[ "${1:-}" == --help ]]; then usage; exit 0; fi
 if [[ $# -lt 2 ]]; then usage; exit 2; fi
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 base=$(realpath -e -- "$1")
-output=$(realpath -m -- "$2")
-shift 2
-mkdir -p -- "$(dirname -- "$output")"
-mkdir -- "$output"
-export POSE_WORK="$output"
-export ANGLE_TASK_DIR="$(dirname -- "$base")"
+if [[ "$base" == *.cif || "$base" == *.mmcif ]]; then
+    residues=$2
+    shift 2
+    work_parent="${ANGLE_WORK_DIR:-/vast/scratch/users/$USER}"
+    mkdir -p -- "$work_parent"
+    output=$(mktemp -d "$(realpath -- "$work_parent")/approach-angle-XXXXXXXX")
+    export POSE_WORK="$output" ANGLE_TASK_DIR="$(dirname -- "$base")"
+    chains=()
+    options=()
+    while (( $# )); do
+        case "$1" in
+            --chains) chains=(--chains "${2:?missing chain selection}"); shift 2 ;;
+            *) options+=("$1"); shift ;;
+        esac
+    done
+    if ! command -v apptainer >/dev/null; then module load apptainer; fi
+    echo "Run directory: $output"
+    bash "$here/container.sh" approach-setup "$base" "$residues" "$output" /opt/angle-defaults.yaml "${chains[@]}"
+    base="$output/inputs/targeted.json"
+    set -- --auto-msa "${options[@]}"
+else
+    output=$(realpath -m -- "$2")
+    shift 2
+    mkdir -p -- "$(dirname -- "$output")"
+    mkdir -- "$output"
+    export POSE_WORK="$output" ANGLE_TASK_DIR="$(dirname -- "$base")"
+fi
 action=approach-run
 for arg in "$@"; do
     if [[ "$arg" == --preview ]]; then action=approach-preview; fi

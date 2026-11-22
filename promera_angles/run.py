@@ -346,6 +346,7 @@ def execute(
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--auto-msa", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--layout-only", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
         "--stage",
@@ -428,6 +429,9 @@ def main():
         )
         print(len(jobs))
         return
+    if args.auto_msa and not args.preview:
+        from .cif_input import prepare_msas
+        prepare_msas(cfg)
     execute(
         cfg,
         args.output,
