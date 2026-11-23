@@ -19,8 +19,10 @@ import torch
 from promera.data import utils as data_utils
 from promera.inference.design import Design, _sample_dir
 
-from pose_geometry import (chain_sequence, cone_placement, cross_distogram, digest,
-                           framework_map, jitter, merge_distogram)
+if __package__:
+    from . import pose_geometry as geometry
+else:
+    import pose_geometry as geometry
 
 
 @contextmanager
@@ -41,7 +43,26 @@ def sampling_seed(seed: int, device: torch.device) -> Iterator[None]:
         np.random.set_state(numpy_state)
 
 
-class PoseGuidedDesign(Design):
+class UnconditionedRefoldMixin:
+    def _refold_batch(self, model: Any, *args: Any, **kwargs: Any) -> Any:
+        """Fail rather than accidentally validating a structurally restrained refold."""
+        original = model.pairformer_forward
+
+        def unrestrained(feats: dict[str, Any], *a: Any, **kw: Any) -> Any:
+            for key in ('distogram_mask', 'is_epitope'):
+                value = feats.get(key)
+                if value is not None and bool(value.any()):
+                    raise RuntimeError(f'validation contamination: nonzero {key} in refold')
+            return original(feats, *a, **kw)
+
+        model.pairformer_forward = unrestrained
+        try:
+            return super()._refold_batch(model, *args, **kwargs)
+        finally:
+            model.pairformer_forward = original
+
+
+class PoseGuidedDesign(UnconditionedRefoldMixin, Design):
     def __init__(self, cfg: Any) -> None:
         if cfg.binder.type != 'vhh' or cfg.binder.get('framework_template'):
             raise ValueError('use VHH sequence conditioning without a framework template')
@@ -49,7 +70,7 @@ class PoseGuidedDesign(Design):
             raise ValueError('experimental runs require a fresh output directory')
         self.guide = cfg.pose_guidance
         self.plan = json.loads(Path(self.guide.plan).read_text())
-        if digest(self.guide.plan) != self.guide.plan_sha256:
+        if geometry.digest(self.guide.plan) != self.guide.plan_sha256:
             raise ValueError('pose plan changed after experiment preparation')
         if cfg.binder.chain != self.plan['binder_chain'] or cfg.binder.framework != self.plan['framework']:
             raise ValueError('configuration no longer matches the prepared guide')
@@ -112,16 +133,16 @@ class PoseGuidedDesign(Design):
         else:
             site_tokens = []
         for name, sequence in self.plan['target_sequences'].items():
-            if chain_sequence(struct.chains[name]) != sequence:
+            if geometry.chain_sequence(struct.chains[name]) != sequence:
                 raise ValueError(f'generated target {name} differs from the prepared schema')
-        fixed, _ = framework_map(chain_sequence(struct.chains[self.cfg.binder.chain]), self.plan['framework'])
+        fixed, _ = geometry.framework_map(geometry.chain_sequence(struct.chains[self.cfg.binder.chain]), self.plan['framework'])
         if len(fixed) != len(self.plan['source_framework_coords']):
             raise ValueError('generated framework mapping differs from the guide')
         b_idx = int(feats['backbone_idx'])
         seed = int.from_bytes(hashlib.sha256(f'{self.guide.seed}:{b_idx}'.encode()).digest()[:4], 'big')
         interval = self.guide.get('approach_angle_range_degrees')
         if interval is not None:
-            framework, guide_metadata = cone_placement(
+            framework, guide_metadata = geometry.cone_placement(
                 self.plan['source_framework_coords'], self.plan['source_axis'], seed,
                 float(interval[0]), float(interval[1]),
                 float(self.guide.translation_angstrom),
@@ -133,17 +154,17 @@ class PoseGuidedDesign(Design):
                 schedule_seed=int(self.guide.seed),
             )
         else:
-            framework = jitter(self.plan['source_framework_coords'], seed,
+            framework = geometry.jitter(self.plan['source_framework_coords'], seed,
                                float(self.guide.rotation_degrees), float(self.guide.translation_angstrom))
             guide_metadata = {'guide_sampling_policy': 'legacy_rigid_jitter'}
         target_ids = [self.plan['target_labels'][i] for i in self.plan['target_landmarks']]
         target_tokens = [offsets[name] + ordinal for name, ordinal in target_ids]
         binder_tokens = [offsets[self.cfg.binder.chain] + fixed[i] for i in self.plan['binder_landmarks']]
-        bins, mask, records = cross_distogram(
+        bins, mask, records = geometry.cross_distogram(
             total, target_tokens, binder_tokens,
             np.asarray(self.plan['target_coords'])[self.plan['target_landmarks']],
             framework[self.plan['binder_landmarks']], int(self.guide.pairs))
-        merge_distogram(feats, bins, mask)
+        geometry.merge_distogram(feats, bins, mask)
         informative_count = sum(bool(p['finite_distance_information']) for p in records)
         overflow_count = len(records) - informative_count
         feats['pose_record'] = {
@@ -163,23 +184,6 @@ class PoseGuidedDesign(Design):
             **guide_metadata,
         }
         return feats
-
-    def _refold_batch(self, model: Any, *args: Any, **kwargs: Any) -> Any:
-        """Fail rather than accidentally validating a structurally restrained refold."""
-        original = model.pairformer_forward
-
-        def unrestrained(feats: dict[str, Any], *a: Any, **kw: Any) -> Any:
-            for key in ('distogram_mask', 'is_epitope'):
-                value = feats.get(key)
-                if value is not None and bool(value.any()):
-                    raise RuntimeError(f'validation contamination: nonzero {key} in refold')
-            return original(feats, *a, **kw)
-
-        model.pairformer_forward = unrestrained
-        try:
-            return super()._refold_batch(model, *args, **kwargs)
-        finally:
-            model.pairformer_forward = original
 
     def run_batch(self, model: Any, batch: dict[str, Any]) -> None:
         if int(self.guide.pairs) and not model.cfg.model.disto_embed:

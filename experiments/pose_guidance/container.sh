@@ -68,6 +68,9 @@ if [[ -n "${discovered:-}" ]]; then
         binds+=",$parent/.nominee/cache:/opt/nominee/cache:ro"
     fi
 fi
+if [[ -n "${ANGLE_TASK_DIR:-}" && "$ANGLE_TASK_DIR" != "${parent:-}" && "$ANGLE_TASK_DIR" != "$WORK" ]]; then
+    binds+=",$ANGLE_TASK_DIR:$ANGLE_TASK_DIR:ro"
+fi
 binds+=",$WORK:$WORK:rw,$ASSETS:/opt/nominee/assets:ro"
 if [[ -d "$ASSETS/ligandmpnn/model_params" ]]; then
     binds+=",$ASSETS/ligandmpnn/model_params:/opt/nominee/component/LigandMPNN/model_params:ro"
@@ -76,15 +79,32 @@ if [[ -n "${POSE_EXTRA_BINDS:-}" ]]; then binds+=",$POSE_EXTRA_BINDS"; fi
 # --home SRC:DEST sets the container's home to the scratch-backed directory.
 # Do not disable the home mount with --no-home or --no-mount home.
 # The working directory is explicitly bound; suppress the implicit CWD mount.
+entry=(/opt/pose_guidance/experiment.py)
+overlay=""
+if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == approach-finish || "${1:-}" == approach-setup || "${1:-}" == approach-setups ]]; then
+    action=$1
+    shift
+    if [[ "$action" == approach-preview ]]; then set -- "$@" --preview; fi
+    binds+=",$HERE:/opt/angle_overlay/experiments/pose_guidance:ro"
+    binds+=",$HERE/../../promera_angles:/opt/angle_overlay/promera_angles:ro"
+    overlay="/opt/angle_overlay:"
+    entry=(-m promera_angles.run)
+    if [[ "$action" == approach-setups ]]; then entry=(-m promera_angles.setup_input); fi
+    if [[ "$action" == approach-setup ]]; then
+        entry=(-m promera_angles.cif_input)
+        binds+=",$HERE/../../examples/design_vhh.yaml:/opt/angle-defaults.yaml:ro"
+    fi
+fi
 args=(exec --cleanenv --no-mount cwd --home "$WORK/.home:$WORK/.home" --bind "$binds" --pwd "$WORK")
 # CPU preparation and analysis do not require a GPU allocation.
-if [[ "${1:-}" == run ]]; then args+=(--nv); fi
+if [[ "${1:-}" == run || "${action:-}" == approach-run ]]; then args+=(--nv); fi
 for var in CUDA_VISIBLE_DEVICES SLURM_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_TASK SLURM_NTASKS_PER_NODE SLURM_NNODES SLURM_NTASKS SLURM_PROCID SLURM_LOCALID SLURM_NODEID; do
     if [[ -n "${!var:-}" ]]; then args+=(--env "$var=${!var}"); fi
 done
 args+=(--env "POSE_RUNTIME_IMAGE=$IMAGE")
+if [[ "${action:-}" == approach-setups ]]; then args+=(--env "ANGLE_SUBMIT_HOME=$HOME" --env "USER=${USER:-$(id -un)}"); fi
 if commit=$(git -C "$HERE" rev-parse HEAD 2>/dev/null); then args+=(--env "POSE_EXPERIMENT_COMMIT=$commit"); fi
-args+=(--env "PYTHONPATH=/opt/pose_guidance:/opt/nominee/component/promera:/opt/nominee/repo")
+args+=(--env "PYTHONPATH=${overlay}/opt/pose_guidance:/opt/nominee/component/promera:/opt/nominee/repo")
 args+=(--env "PROMERA_WEIGHTS=/opt/nominee/assets/checkpoints/promera_2606.ckpt")
 args+=(--env "TINYPROT_CACHE=/opt/nominee/assets/tinyprot")
 args+=(--env "NOMINEE_ASSET_ROOT=/opt/nominee/assets")
@@ -110,4 +130,4 @@ args+=(--env "CUPY_CACHE_DIR=$WORK/.cache/cupy")
 # CPU-side preflight must catch a misconfigured home before any A30 allocation.
 args+=(--env 'POSE_VERIFY_WRITABLE_RUNTIME=1')
 args+=(--env 'PROMERA_RECORD_TRAJECTORY=0' --env 'PYTHONNOUSERSITE=1' --env 'OMP_NUM_THREADS=1')
-apptainer "${args[@]}" "$IMAGE" /usr/bin/env "HOME=$WORK/.home" python /opt/pose_guidance/experiment.py "$@"
+apptainer "${args[@]}" "$IMAGE" /usr/bin/env "HOME=$WORK/.home" python "${entry[@]}" "$@"

@@ -1,0 +1,193 @@
+"""Rigid-motion equivariant geometry. Coordinates in Å; residue keys are external."""
+
+from __future__ import annotations
+
+import numpy as np
+from scipy.spatial import cKDTree
+
+from experiments.pose_guidance.pose_geometry import AnchorClash, MIN_ANCHOR_SEPARATION_A, farthest_points, xyz
+
+
+class GeometryError(ValueError):
+    """The selected coordinates do not determine an interpretable interface."""
+
+
+def unit(vector):
+    length = np.linalg.norm(vector)
+    if not np.isfinite(length) or length < 1e-7:
+        raise GeometryError("undefined direction")
+    return vector / length
+
+
+def degrees(a, b):
+    return float(np.degrees(np.arccos(np.clip(unit(a) @ unit(b), -1, 1))))
+
+
+def extreme(values, largest=True):
+    """Break equal geometric choices by residue order even after a rigid rotation."""
+    best = np.max(values) if largest else np.min(values)
+    return int(np.flatnonzero(np.isclose(values, best, atol=1e-9, rtol=1e-10))[0])
+
+
+def patch_frame(coords, selected):
+    """Estimate the local empty half-space at each selected Cα, then pool signs."""
+    coords = xyz(coords)
+    ids = np.asarray(selected, dtype=int)
+    if (
+        not len(ids)
+        or min(ids) < 0
+        or max(ids) >= len(coords)
+        or len(set(ids)) != len(ids)
+    ):
+        raise GeometryError("invalid patch ordinals")
+    sites = coords[ids]
+    tree = cKDTree(coords)
+    local_normals = []
+    for point in sites:
+        normals = []
+        for radius in (10.0, 15.0):
+            delta = coords[tree.query_ball_point(point, radius + 1e-8)] - point
+            lengths = np.linalg.norm(delta, axis=1)
+            delta = delta[lengths > 1e-6]
+            if len(delta) < 6:
+                raise GeometryError("under-supported patch or exposed terminus")
+            directions = delta / np.linalg.norm(delta, axis=1)[:, None]
+            resultant = -directions.mean(0)
+            if np.linalg.norm(resultant) < 0.22:
+                raise GeometryError(
+                    "buried, two-sided or ambiguously signed neighbourhood"
+                )
+            normal = unit(resultant)
+            # A chain end or ridge cannot determine a surface from one strand.
+            lateral = directions - np.outer(directions @ normal, normal)
+            values = np.linalg.eigvalsh(lateral.T @ lateral / len(lateral))
+            if values[-2] < 0.11:
+                raise GeometryError("insufficient lateral support at patch or terminus")
+            normals.append(normal)
+        if degrees(*normals) > 40:
+            raise GeometryError("surface normal changes with neighbourhood radius")
+        local_normals.append(unit(sum(normals)))
+    # Do not average disconnected sites into an unoccupied centre.
+    visited, pending = {0}, [0]
+    neighbours = cKDTree(sites).query_ball_tree(cKDTree(sites), 14.0)
+    while pending:
+        for index in neighbours[pending.pop()]:
+            if index not in visited:
+                visited.add(index)
+                pending.append(index)
+    if len(visited) != len(sites):
+        raise GeometryError("disconnected epitope patches")
+    normal = unit(np.mean(local_normals, axis=0))
+    spread = max(degrees(n, normal) for n in local_normals)
+    if spread > 45:
+        raise GeometryError("incompatible local surface normals across patch")
+    origin = sites.mean(0)
+    offset = coords - origin
+    height = offset @ normal
+    lateral = offset - np.outer(height, normal)
+    if np.any(
+        (height > 4.0) & (height < 24.0) & (np.linalg.norm(lateral, axis=1) < 4.0)
+    ):
+        raise GeometryError("recessed or occluded central approach")
+    near = np.flatnonzero(np.linalg.norm(offset, axis=1) <= 15.0 + 1e-8)
+    if len(near) < 4:
+        raise GeometryError("too few resolved local landmarks")
+    # Noncoplanar anchors distinguish mirrored placements at a planar surface.
+    first = int(near[extreme(np.linalg.norm(offset[near], axis=1), False)])
+    a = coords[first]
+    diff = coords[near] - a
+    second = int(near[extreme(np.linalg.norm(diff, axis=1))])
+    line = unit(coords[second] - a)
+    third = int(near[extreme(np.linalg.norm(np.cross(diff, line), axis=1))])
+    plane = unit(np.cross(line, coords[third] - a))
+    fourth = int(near[extreme(abs(diff @ plane))])
+    if (
+        len({first, second, third, fourth}) != 4
+        or abs((coords[fourth] - a) @ plane) < 2.0
+    ):
+        raise GeometryError(
+            "near-coplanar target anchors cannot resolve a mirrored guide"
+        )
+    # Use structural coordinates for azimuth zero to avoid a lab-frame bias.
+    tangent = unit(lateral[near[extreme(np.linalg.norm(lateral[near], axis=1))]])
+    return dict(
+        origin=origin.tolist(),
+        normal=normal.tolist(),
+        tangent=tangent.tolist(),
+        landmarks=[first, second, third, fourth],
+        neighbourhood=near.tolist(),
+        normal_spread_deg=spread,
+        site_normals=np.asarray(local_normals).tolist(),
+    )
+
+
+def basis(axis, transverse):
+    z = unit(axis)
+    x = unit(transverse - (transverse @ z) * z)
+    return np.stack((x, np.cross(z, x), z))
+
+
+def scaffold_shape(ca, fixed, cdr):
+    ca = xyz(ca)
+    framework = ca[fixed]
+    tip = ca[cdr].mean(0)
+    inward = unit(tip - framework.mean(0))
+    d = framework - tip
+    lateral = d - np.outer(d @ inward, inward)
+    axes = basis(inward, lateral[extreme(np.linalg.norm(lateral, axis=1))])
+    anchors = farthest_points(framework, tie_tolerance=1e-8)
+    return dict(
+        fixed_indices=anchors, local_xyz=((framework[anchors] - tip) @ axes.T).tolist()
+    )
+
+
+def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None):
+    lo, hi = interval
+    if (
+        not np.isfinite([lo, hi, standoff]).all()
+        or not 0 <= lo <= hi <= 180
+        or standoff <= 0
+    ):
+        raise ValueError("invalid angular bounds or CDR-centroid standoff")
+    rng = np.random.default_rng(seed)
+    cos_theta = rng.uniform(np.cos(np.radians(hi)), np.cos(np.radians(lo)))
+    sin_theta = np.sqrt(max(0.0, 1.0 - cos_theta**2))
+    phi, roll = rng.uniform(0, 2 * np.pi, size=2)
+    x, y, z = basis(np.asarray(frame["normal"]), np.asarray(frame["tangent"]))
+    radial = np.cos(phi) * x + np.sin(phi) * y
+    ray = cos_theta * z + sin_theta * radial
+    transverse = -np.sin(phi) * x + np.cos(phi) * y
+    tip = np.asarray(frame["origin"]) + standoff * ray
+    local = xyz(shape["local_xyz"])
+    targets = None if target_anchors is None else xyz(target_anchors)
+    # Test the original roll first, then traverse a circle in 15-degree steps.
+    # All candidates have the same tilt, azimuth, and CDR-centroid standoff.
+    for step in range(24):
+        candidate = (roll + step * np.pi / 12) % (2 * np.pi)
+        rotation = basis(
+            -ray, np.cos(candidate) * transverse + np.sin(candidate) * np.cross(-ray, transverse)
+        )
+        anchors = local @ rotation + tip
+        if targets is not None:
+            distances = np.linalg.norm(anchors[:, None] - targets[None, :], axis=-1)
+            if distances.min() <= MIN_ANCHOR_SEPARATION_A:
+                continue
+        return anchors, dict(
+            requested_deg=float(np.degrees(np.arccos(cos_theta))),
+            ray=ray.tolist(),
+            azimuth_deg=float(np.degrees(phi)),
+            roll_deg=float(np.degrees(candidate)),
+            roll_attempts=step + 1,
+        )
+    raise AnchorClash("all 24 sampled rolls have a cross-chain anchor separation <= 1 A")
+
+
+def orientation(frame, fw, cdr):
+    origin, outward = np.asarray(frame["origin"]), np.asarray(frame["normal"])
+    center, tip = xyz(fw).mean(0), xyz(cdr).mean(0)
+    return dict(
+        spatial_deg=degrees(center - origin, outward),
+        facing_deg=degrees(tip - center, -outward),
+        pointing_to_patch_deg=degrees(tip - center, origin - center),
+        framework_to_patch_A=float(np.linalg.norm(center - origin)),
+    )
