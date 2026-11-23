@@ -200,6 +200,13 @@ def cone_placement(
     }
 
 
+MIN_ANCHOR_SEPARATION_A = 1.0
+
+
+class AnchorClash(ValueError):
+    """A proposed cross-chain anchor pair violates the minimum separation."""
+
+
 def cross_distogram(
     n_tokens: int, target_tokens: list[int], binder_tokens: list[int],
     target_xyz: Any, binder_xyz: Any, count: int,
@@ -228,8 +235,10 @@ def cross_distogram(
     order = [(i, (i + offset) % 4) for offset in range(4) for i in range(4)]
     for ti, bi in order[:count]:
         distance = float(np.linalg.norm(target[ti] - binder[bi]))
-        if not distance > 1.0:
-            raise ValueError(
+        if not np.isfinite(distance):
+            raise ValueError('non-finite cross-chain anchor separation')
+        if distance <= MIN_ANCHOR_SEPARATION_A:
+            raise AnchorClash(
                 f'cross-chain anchor C-alpha separation {distance:.3f} A is <= 1 A; '
                 'guide contains a physically implausible clash'
             )

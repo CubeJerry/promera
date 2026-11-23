@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from experiments.pose_guidance.pose_geometry import (
+    AnchorClash,
     chain_sequence,
     cross_distogram,
     digest,
@@ -18,6 +19,7 @@ from experiments.pose_guidance.pose_task import UnconditionedRefoldMixin, sampli
 from promera.data import utils as data_utils
 from promera.inference.design import Design, _sample_dir
 
+from .batches import accepted_batch
 from .geometry import placement
 
 
@@ -57,15 +59,24 @@ def condition(feats, plan, seed, interval, standoff):
         return record
     marks = plan["frame"]["landmarks"]
     shape = plan["shape"]
-    coords, guide = placement(plan["frame"], shape, interval, seed, standoff)
-    bins, mask, pairs = cross_distogram(
-        n,
-        [token(keys[i]) for i in marks],
-        [offsets[binder] + fw[i] for i in shape["fixed_indices"]],
-        np.asarray(plan["coords"])[marks],
-        coords,
-        16,
-    )
+    target_marks = np.asarray(plan["coords"])[marks]
+    try:
+        coords, guide = placement(plan["frame"], shape, interval, seed, standoff,
+                                  target_anchors=target_marks)
+        bins, mask, pairs = cross_distogram(
+            n,
+            [token(keys[i]) for i in marks],
+            [offsets[binder] + fw[i] for i in shape["fixed_indices"]],
+            target_marks,
+            coords,
+            16,
+        )
+    except AnchorClash as exc:
+        # Keep identical collate keys even when a batch contains rejected guides.
+        if "distogram_mask" not in feats:
+            feats["distogram_mask"] = np.zeros((n, n), dtype=bool)
+            feats["distogram_emb"] = np.zeros((n, n), dtype=np.int64)
+        return dict(record, guide_seed=seed, record_status="rejected_guide", reason=str(exc))
     target_xyz = np.asarray(plan["coords"])
     v = target_xyz - plan["frame"]["origin"]
     along = v @ np.array(guide["ray"])
@@ -119,5 +130,9 @@ class TargetedDesign(UnconditionedRefoldMixin, Design):
             folder = Path(_sample_dir(self.cfg.output, name, i))
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "angle.json").write_text(json.dumps(record, allow_nan=False))
+        batch = accepted_batch(batch)
+        if batch is None:
+            return
+        ids = [int(i) for i in batch["backbone_idx"]]
         with sampling_seed(self.seed("batch", ids), batch["restype"].device):
             super().run_batch(model, batch)

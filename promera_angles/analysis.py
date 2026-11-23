@@ -146,7 +146,8 @@ def summarise(rows, interval):
     report = {}
     for arm, items in groups.items():
         stats = dict(
-            expected=len(items), generated=sum(r["file_exists"] for r in items)
+            expected=len(items), generated=sum(r["file_exists"] for r in items),
+            rejected_guides=sum(r.get("geometry_status") == "rejected_guide" for r in items),
         )
         for metric in (
             "spatial_deg",
@@ -306,7 +307,10 @@ def analyse(folder, jobs, plan, interval):
                 )
                 (backbones if is_gen else refolds).append(row)
                 if not row["file_exists"]:
-                    row["geometry_status"] = "missing structure"
+                    if is_gen and record.get("record_status") == "rejected_guide":
+                        row.update(geometry_status="rejected_guide", reason=record.get("reason"))
+                    else:
+                        row["geometry_status"] = "missing structure"
                     continue
                 try:
                     metrics, per_site, shape = measurements(

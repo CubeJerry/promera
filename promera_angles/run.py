@@ -204,7 +204,7 @@ def finish(root, manifest, plan):
         raise RuntimeError(
             "one or more design jobs did not complete; see analysis/summary.json"
         )
-    if any(a["generated"] != a["expected"] for a in result["arms"].values()):
+    if any(a["generated"] + a["rejected_guides"] != a["expected"] for a in result["arms"].values()):
         raise RuntimeError("incomplete backbone generation; see analysis/backbones.csv")
 
 

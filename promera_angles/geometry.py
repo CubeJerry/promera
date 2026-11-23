@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
-from experiments.pose_guidance.pose_geometry import farthest_points, xyz
+from experiments.pose_guidance.pose_geometry import AnchorClash, MIN_ANCHOR_SEPARATION_A, farthest_points, xyz
 
 
 class GeometryError(ValueError):
@@ -141,7 +141,7 @@ def scaffold_shape(ca, fixed, cdr):
     )
 
 
-def placement(frame, shape, interval, seed, standoff=6.0):
+def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None):
     lo, hi = interval
     if (
         not np.isfinite([lo, hi, standoff]).all()
@@ -157,16 +157,29 @@ def placement(frame, shape, interval, seed, standoff=6.0):
     radial = np.cos(phi) * x + np.sin(phi) * y
     ray = cos_theta * z + sin_theta * radial
     transverse = -np.sin(phi) * x + np.cos(phi) * y
-    rotation = basis(
-        -ray, np.cos(roll) * transverse + np.sin(roll) * np.cross(-ray, transverse)
-    )
     tip = np.asarray(frame["origin"]) + standoff * ray
-    return np.asarray(shape["local_xyz"]) @ rotation + tip, dict(
-        requested_deg=float(np.degrees(np.arccos(cos_theta))),
-        ray=ray.tolist(),
-        azimuth_deg=float(np.degrees(phi)),
-        roll_deg=float(np.degrees(roll)),
-    )
+    local = xyz(shape["local_xyz"])
+    targets = None if target_anchors is None else xyz(target_anchors)
+    # Test the original roll first, then traverse a circle in 15-degree steps.
+    # All candidates have the same tilt, azimuth, and CDR-centroid standoff.
+    for step in range(24):
+        candidate = (roll + step * np.pi / 12) % (2 * np.pi)
+        rotation = basis(
+            -ray, np.cos(candidate) * transverse + np.sin(candidate) * np.cross(-ray, transverse)
+        )
+        anchors = local @ rotation + tip
+        if targets is not None:
+            distances = np.linalg.norm(anchors[:, None] - targets[None, :], axis=-1)
+            if distances.min() <= MIN_ANCHOR_SEPARATION_A:
+                continue
+        return anchors, dict(
+            requested_deg=float(np.degrees(np.arccos(cos_theta))),
+            ray=ray.tolist(),
+            azimuth_deg=float(np.degrees(phi)),
+            roll_deg=float(np.degrees(candidate)),
+            roll_attempts=step + 1,
+        )
+    raise AnchorClash("all 24 sampled rolls have a cross-chain anchor separation <= 1 A")
 
 
 def orientation(frame, fw, cdr):
