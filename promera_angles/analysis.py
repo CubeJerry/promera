@@ -12,6 +12,7 @@ from experiments.pose_guidance.pose_geometry import AA3, align, framework_map, r
 
 from .geometry import GeometryError, degrees, orientation, patch_frame
 from .structures import atom_table
+from .report import experiment_report
 
 
 def write_json(path, value):
@@ -116,6 +117,23 @@ def measurements(path, plan, cdr_ids):
         min_heavy_atom_A=float(min(nearest)),
         binder_atoms_with_clash_2A=int(sum(nearest < 2.0)),
     )
+    metrics["cdr_patch_contact"] = any(b in cdr_set and k in selected for b, k in pairs)
+    metrics["pose_class"] = "no_contacts" if not contacted else None
+    if contacted and contacted <= tlookup.keys():
+        interface = np.mean([tlookup[k] for k in sorted(contacted)], axis=0)
+        try:
+            axis = degrees(bc[cdr].mean(0) - bc[fw].mean(0), interface - bc[fw].mean(0))
+        except GeometryError:
+            pass  # Undefined centroid vector; other measurements remain usable.
+        else:
+            share = metrics["cdr_contact_fraction"]
+            metrics["interface_axis_deg"] = axis
+            if axis <= 20 and share > 0.60:
+                metrics["pose_class"] = "cdr_driven"
+            elif axis >= 30 or (axis > 20 and share < 0.50):
+                metrics["pose_class"] = "framework_driven"
+            else:
+                metrics["pose_class"] = "mixed"
     # A local distortion may destroy the normal; preserve contact results.
     try:
         frame = patch_frame(tc, plan["selected"])
@@ -133,6 +151,7 @@ def measurements(path, plan, cdr_ids):
         (
             bc[fw] @ rotation + translation,
             (bc[cdr].mean(0) - bc[fw].mean(0)) @ rotation,
+            bc[cdr] @ rotation + translation,
         ),
     )
 
@@ -303,6 +322,7 @@ def analyse(folder, jobs, plan, interval):
                     guide_record_status=record.get("record_status", "ok"),
                     file_exists=path.is_file(),
                     requested_deg=record.get("requested_deg"),
+                    roll_attempts=record.get("roll_attempts"),
                     ray_obstructed_ca_proxy=record.get("ray_obstructed_ca_proxy"),
                 )
                 (backbones if is_gen else refolds).append(row)
@@ -329,6 +349,9 @@ def analyse(folder, jobs, plan, interval):
                             ),
                             cdr_axis_change_deg=degrees(gen_shape[1], shape[1]),
                         )
+                        fit, shift = align(shape[0], gen_shape[0])
+                        row["self_fit_framework_rmsd_A"] = rmsd(shape[0] @ fit + shift, gen_shape[0])
+                        row["cdr_rmsd_after_framework_fit_A"] = rmsd(shape[2] @ fit + shift, gen_shape[2])
                         for key in ("spatial_deg", "facing_deg"):
                             if key in metrics and key in generated:
                                 row["delta_" + key] = metrics[key] - generated[key]
@@ -369,6 +392,7 @@ def analyse(folder, jobs, plan, interval):
         contact_definition="unique represented binder residues within 5 Å of a represented antigen heavy atom",
         interpretation="predicted structural geometry; binding requires independent experimental evidence",
     )
+    summary["pose_endpoints"] = experiment_report(folder, backbones, refolds, interval)
     write_json(folder / "summary.json", summary)
     figures(folder, backbones, interval)
     return summary
