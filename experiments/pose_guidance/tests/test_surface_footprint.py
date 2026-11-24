@@ -109,7 +109,10 @@ def test_revised_audit_numerical_parity() -> None:
         observed = footprint_geometry(cKDTree(atoms), sites, case["axis"])
         for key, value in expected.items():
             if isinstance(value, (float, int, np.number)):
-                assert observed[key] == pytest.approx(value, abs=2e-6, rel=0), (case, key)
+                assert observed[key] == pytest.approx(value, abs=2e-6, rel=0), (
+                    case,
+                    key,
+                )
             else:
                 assert observed[key] == value, (case, key)
     # The fixture construction itself must agree with the supplied audit test.
