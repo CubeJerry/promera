@@ -89,7 +89,10 @@ if [[ "${1:-}" == approach-run || "${1:-}" == approach-preview || "${1:-}" == ap
     binds+=",$HERE/../../promera_angles:/opt/angle_overlay/promera_angles:ro"
     overlay="/opt/angle_overlay:"
     entry=(-m promera_angles.run)
-    if [[ "$action" == approach-setups ]]; then entry=(-m promera_angles.setup_input); fi
+    if [[ "$action" == approach-setups ]]; then
+        entry=(-m promera_angles.setup_input)
+        binds+=",$HERE/../../examples/design_vhh.yaml:/opt/angle-defaults.yaml:ro"
+    fi
     if [[ "$action" == approach-setup ]]; then
         entry=(-m promera_angles.cif_input)
         binds+=",$HERE/../../examples/design_vhh.yaml:/opt/angle-defaults.yaml:ro"
