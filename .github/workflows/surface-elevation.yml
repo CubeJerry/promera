@@ -27,23 +27,41 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install CPU analysis dependencies
-        run: python -m pip install numpy scipy pandas matplotlib omegaconf==2.3.0 gemmi pytest pytest-cov
+        run: python -m pip install numpy scipy pandas matplotlib omegaconf==2.3.0 gemmi pytest pytest-cov mypy ruff black 'tinyprot @ git+https://github.com/bjing2016/tinyprot.git@dd2178b650899460223af1a72eb5d85f9ee19619'
+      - name: Install CPU PyTorch for native feature tests
+        run: python -m pip install 'torch==2.9.0' --index-url https://download.pytorch.org/whl/cpu
+      - name: Prepare chemical entries for synthetic native featurization
+        run: |
+          export TINYPROT_CACHE="$RUNNER_TEMP/tinyprot-surface-test"
+          mkdir -p "$TINYPROT_CACHE"
+          echo "TINYPROT_CACHE=$TINYPROT_CACHE" >> "$GITHUB_ENV"
+          python - <<'PY'
+          import gzip, lmdb, os, pathlib, urllib.request
+          root = pathlib.Path(os.environ["TINYPROT_CACHE"])
+          lmdb.open(str(root/"taxonomy.lmdb")).close()
+          env = lmdb.open(str(root/"ccd.lmdb"))
+          with env.begin(write=True) as txn:
+              for name in ("ALA", "GLY", "SER", "UNK"):
+                  with urllib.request.urlopen(f"https://files.rcsb.org/ligands/download/{name}.cif",timeout=30) as response:
+                      txn.put(name.encode(), gzip.compress(response.read()))
+          env.close()
+          PY
       - name: Compile source and validate launch scripts
         run: |
           python -m compileall -q promera_angles experiments/pose_guidance
           bash -n experiments/pose_guidance/launch_surface_elevation.sh
           bash -n experiments/pose_guidance/container.sh
           bash -n experiments/pose_guidance/approach_stage.sh
-      - name: Test geometry, actual launcher scripts and report lifecycle
+      - name: Test geometry, native features, actual launcher scripts and report lifecycle
         run: |
-          python -m pytest -q experiments/pose_guidance/tests/test_surface*.py experiments/pose_guidance/tests/test_elevation_analysis.py --junitxml=surface-elevation-tests.xml
-      - name: Check legacy geometry and report compatibility
-        run: |
-          python -m pytest -q experiments/pose_guidance/tests/test_target_relative_angles.py -k "not feature_parity_and_batched_collation and not native_mapping_and_preparation and not installed_native_features and not cif_pair_entry and not nominee_setups"
+          python -m pytest -q experiments/pose_guidance/tests --basetemp=surface-elevation-smoke --junitxml=surface-elevation-tests.xml --cov=promera_angles.footprint --cov=promera_angles.geometry --cov=promera_angles.conditioning --cov=promera_angles.settings --cov=promera_angles.refold --cov-report=term-missing --cov-report=json
+      - name: Type-check new estimator and versioned settings
+        run: python -m mypy --strict --ignore-missing-imports --follow-imports=skip promera_angles/footprint.py promera_angles/settings.py promera_angles/refold.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: surface-elevation-cpu-results
           path: |
             surface-elevation-tests.xml
+            coverage.json
             surface-elevation-smoke/

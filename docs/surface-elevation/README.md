@@ -88,6 +88,27 @@ The adapter was checked against the source at [`CubeJerry/dev` commit `ed7cf4419
 
 Chain IDs remain case-sensitive. NOMINEE chooses a binder chain outside the antigen set, so an A/B/C antigen can use binder D. Chain-qualified residues are converted once through NOMINEE's normal runtime mapping; the launcher does not preconvert and then ask Promera to convert again. Ambiguous correspondence, excluded selections and unsupported insertion-coded author targets fail validation before submission.
 
+## Native configuration
+
+A native `promera.inference.Design` task can opt in with an explicit block:
+
+```yaml
+surface_elevation:
+  enabled: true
+  elevation_interval_deg: [70, 90]
+  legacy_tilt_interval_deg: [0, 20]
+  three_arms: true
+  backbones: 1000
+  replicates: 10
+  seed: 0
+  standoff_A: 6.0
+  cdr_lateral_offset_A: [0.0, 0.0]
+```
+
+The existing `approach_angle` block retains legacy placement-ray semantics. Both blocks cannot be enabled together, and historical `interval_deg` is rejected inside a surface-elevation request. When both experiments are disabled, the native CLI follows its ordinary inference path. For one new guided arm use `three_arms: false`; `paired: true` adds an ordinary control to that arm. A three-arm study requires both independently named intervals.
+
+The same backend task can be launched with `python -m promera_angles.run --config TASK.yaml --output NEW_DIRECTORY --three-arms --elevation 70 90 --legacy-tilt 0 20 --backbones 1000 --replicates 10`. Saved legacy settings are not converted implicitly by these flags; remove the legacy block and supply both requested definitions explicitly.
+
 ## Compatibility and checks
 
 The existing `launch_approach.sh`, saved `approach_angle` configuration and historical `--angle 0 20` continue to mean legacy tilt. The new launcher rejects `--angle` with an explanatory error. A surface study is requested explicitly with `--elevation`/`--three-arms`; it never silently reinterprets old numeric results. With the experiment disabled, ordinary targeted generation retains its existing entry point.

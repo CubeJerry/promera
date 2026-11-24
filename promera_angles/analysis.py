@@ -165,6 +165,30 @@ def measurements(path: Path, plan: Row, cdr_ids: Any) -> tuple[Row, list[Row], A
                            legacy_placement_spatial_deg=historical["spatial_deg"],
                            legacy_cdr_facing_patch_deg=historical["facing_deg"],
                            legacy_pointing_to_requested_patch_deg=historical["pointing_to_patch_deg"])
+    if metrics["missing_antigen_chains"]:
+        metrics["partial_footprint_status"] = metrics["footprint_status"]
+        metrics["partial_footprint_diagnostics"] = metrics["footprint_diagnostics"]
+        # The audit requires every declared antigen chain. Keep the useful
+        # observed-subset diagnostics explicitly partial, never as a complete
+        # footprint or a negative requested-site-contact observation.
+        partial_keys = {
+            *fp.keys(), "requested_site_contact", "patch_residues_contacted",
+            "requested_site_residue_keys", "footprint_author_residues",
+            "heavy_atom_residue_pairs", "cdr_residue_pairs", "cdr_patch_contact",
+            "contacting_cdr_residues", "contacting_framework_residues",
+            "cdr_contact_fraction", "pose_class", "interface_axis_deg",
+            "legacy_centroid_pointing_deg", "patch_footprint_normal_difference_deg",
+        } - {"status", "detail"}
+        for key in partial_keys:
+            if key in metrics:
+                metrics["partial_" + key] = metrics[key]
+                metrics[key] = None
+        for key in ("footprint_elevation_deg", "inclination_deg", "sensitivity_min_deg", "sensitivity_max_deg", "pose_label"):
+            metrics[key] = None
+        metrics["footprint_status"] = "missing_coordinates"
+        metrics["footprint_diagnostics"] = "missing_selected_antigen_chains:" + ",".join(metrics["missing_antigen_chains"])
+        for row in rows:
+            row["antigen_coordinates_complete"] = False
     return metrics, rows, shape
 
 

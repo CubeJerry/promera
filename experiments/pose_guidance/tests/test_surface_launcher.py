@@ -207,6 +207,20 @@ def test_nominee_setup_uses_author_numbers_and_default_framework(
     cif = tmp_path / "antigen.cif"
     xyz = np.array([[i * 3.8, 0.0, 0.0] for i in range(6)])
     write_cif(cif, {"A": ("ASGASG", xyz), "B": ("SGASGA", xyz + [0, 9, 0])})
+    # NOMINEE uses Bio.PDB's full parser; the minimal geometry writer omits B-factors.
+    text = cif.read_text()
+    if "_atom_site.B_iso_or_equiv" not in text:
+        cif.write_text(
+            "\n".join(
+                line[:-1] + "20 1"
+                if line.startswith("ATOM ")
+                else line.replace(
+                    "_atom_site.pdbx_PDB_model_num",
+                    "_atom_site.B_iso_or_equiv\n_atom_site.pdbx_PDB_model_num",
+                )
+                for line in text.splitlines()
+            ) + "\n"
+        )
     setup = tmp_path / "antigen_setup.json"
     setup.write_text(json.dumps({
         "kind": "nominee_antigen_setup", "schema_version": 3,

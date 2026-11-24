@@ -1,5 +1,7 @@
 <div align="center">
 
+> **Experimental nanobody approach angles:** the [surface-elevation study](docs/surface-elevation/README.md) uses signed C→F elevation above the antigen surface and compares ordinary targeting, legacy placement-ray guidance, and the new guide. Historical angle commands retain their original definitions.
+
 # Promera
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

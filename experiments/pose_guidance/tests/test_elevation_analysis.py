@@ -120,7 +120,18 @@ def test_measurement_is_rigid_invariant_and_missing_patch_does_not_veto_footprin
     atoms=atom_frame(plan,binder_coords(plan,0,20))
     monkeypatch.setattr(analysis,"atom_table",lambda path:atoms.copy())
     first,_,_=measurements(Path("synthetic.cif"),plan,None)
-    assert first["patch_elevation_deg"]==pytest.approx(70,abs=1e-6)
+    # This fixture's body angle uses laboratory z; the asymmetric patch normal
+    # is tilted. Independently use complete centroids and the saved patch plane.
+    ca=atoms[(atoms.label_asym_id=="VHH") & (atoms.label_atom_id=="CA")].sort_values("pos")
+    xyz_ca=ca[["Cartn_x","Cartn_y","Cartn_z"]].to_numpy(float)
+    cdr_zero=np.array([3,7,8,12])
+    framework_zero=np.array([i for i in range(len(SEQUENCE)) if i not in cdr_zero])
+    body_axis=xyz_ca[framework_zero].mean(0)-xyz_ca[cdr_zero].mean(0)
+    normal=np.asarray(plan["frame"]["normal"],dtype=float)
+    expected=float(np.degrees(np.arcsin(np.clip(
+        np.dot(body_axis,normal)/(np.linalg.norm(body_axis)*np.linalg.norm(normal)), -1, 1))))
+    assert abs(expected-70)>1
+    assert first["patch_elevation_deg"]==pytest.approx(expected,abs=1e-6)
     assert first["footprint_status"]=="ok"
     rotated=atoms.copy()
     xyz=["Cartn_x","Cartn_y","Cartn_z"]
@@ -206,3 +217,44 @@ def test_analysis_report_real_synthetic_cifs_and_historical_compatibility(tmp_pa
         row=next(csv.DictReader(handle))
     assert row["requested_elevation_deg"]=="" and float(row["requested_legacy_tilt_deg"])==10
     assert row["footprint_in_band"]==""
+
+
+def test_missing_selected_antigen_chain_masks_primary_footprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan=fixture()
+    atoms=atom_frame(plan,binder_coords(plan,0,20))
+    partial=atoms[atoms.label_asym_id!="Right"]
+    monkeypatch.setattr(analysis,"atom_table",lambda path:partial.copy())
+    metrics,sites,_=measurements(Path("missing_antigen_chain.cif"),plan,None)
+    assert metrics["missing_antigen_chains"]==["Right"]
+    assert metrics["footprint_status"]=="missing_coordinates"
+    assert metrics["footprint_elevation_deg"] is None
+    assert metrics["requested_site_contact"] is None
+    assert metrics["footprint_residue_keys"] is None
+    assert "partial_footprint_status" in metrics
+    assert metrics["partial_footprint_residue_keys"]
+    assert metrics["partial_requested_site_contact"] is True
+    assert all(site["antigen_coordinates_complete"] is False for site in sites)
+
+
+@pytest.mark.parametrize("row", [
+    fold(0,angle=60,score=None),
+    fold(0,angle=None,site=False,score=None),
+    fold(0,angle=None,site=None,score=.1),
+])
+def test_known_failed_criterion_resolves_outcome_without_fabricating_coverage(row: dict) -> None:
+    assert useful_refold(row,[70,90]) is False
+    parents,_,totals,_=elevation_tables([parent(0,budget=1)],[row],[70,90])
+    assert parents.iloc[0].endpoint_status=="failure"
+    assert totals.iloc[0].evaluable_refolds==0
+    assert totals.iloc[0].known_outcome_refolds==1
+    assert totals.iloc[0].unresolved_parents==0
+
+
+def test_explicit_missing_contact_is_not_overwritten_by_partial_count() -> None:
+    row=fold(0,site=None)
+    row["patch_residues_contacted"]=0
+    assert useful_refold(row,[70,90]) is None
+    _,_,totals,_=elevation_tables([parent(0,budget=1)],[row],[70,90])
+    assert totals.iloc[0].refolds_measured_site_contact==0
+    assert totals.iloc[0].evaluable_refolds==0
+    assert totals.iloc[0].unresolved_parents==1

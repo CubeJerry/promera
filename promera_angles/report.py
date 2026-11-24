@@ -94,7 +94,7 @@ COUNT_COLUMNS = [
     "with_refolds","with_evaluable_refolds","complete_refold_budgets","known_refold_budget_parents",
     "unknown_refold_budget_parents","expected_refolds","available_refolds","missing_refolds","excess_refolds",
     "refolds_measured_elevation","refolds_measured_site_contact","refolds_measured_scdockq",
-    "evaluable_refolds","successful_refolds","useful_parents","unresolved_parents",
+    "evaluable_refolds","known_outcome_refolds","successful_refolds","useful_parents","unresolved_parents",
     "conditional_recovered","conditional_total","conditional_unresolved","conditional_with_evaluable_refold",
 ]
 EFFECT_COLUMNS=["comparison","arm","reference","metric","difference_pp","low95_pp","high95_pp",
@@ -116,17 +116,25 @@ def _inside(value: Any, interval: Any) -> bool | None:
     return None if number is None or interval is None else bool(interval[0]-1e-7 <= number <= interval[1]+1e-7)
 
 
-def useful_refold(row: Row, interval: Any) -> bool | None:
-    """Evaluate all three criteria on this same refold, preserving missingness."""
+def _refold_criteria(row: Row, interval: Any) -> tuple[bool | None, bool | None, bool | None]:
+    """Separate criterion availability from the logical outcome."""
     angle=_inside(row.get("footprint_elevation_deg"),interval)
     site=row.get("requested_site_contact")
-    if site is None:
+    if "requested_site_contact" not in row:
         contacts=_finite(row.get("patch_residues_contacted"))
         site=None if contacts is None else contacts>0
     score=_finite(row.get("scDockQ"))
-    if angle is None or site is None or score is None:
-        return None
-    return bool(angle and site and score>=.23)
+    return angle, None if site is None else bool(site), None if score is None else score>=.23
+
+
+def useful_refold(row: Row, interval: Any) -> bool | None:
+    """Apply three-valued AND to criteria from this same refold."""
+    criteria=_refold_criteria(row,interval)
+    if any(value is False for value in criteria):
+        return False
+    if all(value is True for value in criteria):
+        return True
+    return None
 
 
 def _paired_effects(reps: pd.DataFrame) -> pd.DataFrame:
@@ -180,7 +188,7 @@ def elevation_tables(backbones: list[Row], refolds: list[Row], interval: Any
         siblings=families[key]
         outcomes=[useful_refold(row,interval) for row in siblings]
         hit=any(value is True for value in outcomes)
-        evaluable=sum(value is not None for value in outcomes)
+        evaluable=sum(all(value is not None for value in _refold_criteria(row,interval)) for row in siblings)
         budget=parent.get("expected_refolds")
         known=type(budget) is int and budget>=0
         expected=int(budget) if known else 0
@@ -205,7 +213,8 @@ def elevation_tables(backbones: list[Row], refolds: list[Row], interval: Any
             refolds_measured_elevation=sum(_finite(row.get("footprint_elevation_deg")) is not None for row in siblings),
             refolds_measured_site_contact=sum(row.get("requested_site_contact") is not None for row in siblings),
             refolds_measured_scdockq=sum(_finite(row.get("scDockQ")) is not None for row in siblings),
-            evaluable_refolds=evaluable,successful_refolds=sum(value is True for value in outcomes),
+            evaluable_refolds=evaluable,known_outcome_refolds=sum(value is not None for value in outcomes),
+            successful_refolds=sum(value is True for value in outcomes),
             useful_parents=int(hit),unresolved_parents=int(unknown),
             conditional_recovered=int(inband is True and hit),conditional_total=int(inband is True),
             conditional_unresolved=int(inband is True and unknown),
@@ -363,7 +372,7 @@ def experiment_report(folder: Path, backbones: list[Row], refolds: list[Row], in
 <h2>3. Which guide produced more useful parents?</h2>
 <div class="note">A useful parent has at least one refold that simultaneously has an actual-footprint elevation in the evaluation band, contacts at least one requested antigen residue, and has scDockQ ≥0.23. All three criteria must hold for the same refold. Five successful siblings still count as one parent opportunity.</div>
 <div class="scroll">{_table(outcomes,["Arm","Requested parents","Generated parents","Useful parents / requested","Unresolved parent outcomes","Recovered / initially in-band parents","Unresolved initially in-band","In-band parents with an evaluable refold"])}</div>
-<p>Conditional recovery uses all parents whose own generated footprint elevation was in-band, including those with missing refolds. Missing parent elevations are outside that conditional denominator and remain visible in accounting. Confirmed successes form a lower bound; CSV tables also give upper bounds if every unresolved parent could succeed.</p>
+<p>Conditional recovery uses all parents whose own generated footprint elevation was in-band, including those with missing refolds. Missing parent elevations are outside that conditional denominator and remain visible in accounting. A refold fails the joint criterion as soon as one measured criterion is false; missing values in its other criteria still remain in the coverage counts. Confirmed successes form a lower bound; CSV tables also give upper bounds if every unresolved parent could succeed.</p>
 <h2>Matched replicates and uncertainty</h2>
 <div class="scroll">{_table(effect_rows,["Comparison","Endpoint","Difference pp","Lower 95%","Upper 95%","Matched replicates","Replicates with both denominators","Valid bootstrap draws"])}</div>
 <p>Effects compare pooled parent rates with 5,000 paired-replicate bootstrap resamples. All sibling refolds stay within their parent and replicate. Intervals require at least two matched replicates with nonzero denominators in both arms. Sparse conditional denominators can leave uncertainty unavailable.</p>
