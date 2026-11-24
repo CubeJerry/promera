@@ -8,15 +8,26 @@ import numpy as np
 
 from experiments.pose_guidance.pose_geometry import AA3, digest, read_chains
 
-from .geometry import patch_frame
+from .geometry import GeometryError, patch_frame, prospective_patch_frame
 
 
 def atom_table(path):
-    from tinyprot.mmcif import read_mmcif
+    try:
+        from tinyprot.mmcif import read_mmcif
+    except ModuleNotFoundError:
+        import gemmi
+        import pandas as pd
 
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rt") as handle:
-        table = read_mmcif(handle)["_atom_site"].copy()
+        category = (
+            gemmi.cif.read(str(path)).sole_block().find_mmcif_category("_atom_site.")
+        )
+        table = pd.DataFrame(
+            list(category), columns=[t.split(".", 1)[1] for t in category.tags]
+        )
+    else:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt") as handle:
+            table = read_mmcif(handle)["_atom_site"].copy()
     if "pdbx_PDB_model_num" in table and table.pdbx_PDB_model_num.nunique() != 1:
         raise ValueError("expected one coordinate model per file")
     table["label_asym_id"] = table.label_asym_id.astype(str)
@@ -24,14 +35,21 @@ def atom_table(path):
     table = table[~table.label_seq_id.isin([".", "?"])].copy()
     table["pos"] = table.label_seq_id.astype(int)
     if "occupancy" in table:
-        table = table[table.occupancy.astype(float) > 0].copy()
-        table = table.assign(_occ=table.occupancy.astype(float)).sort_values(
+        # Match the revised audit: unspecified occupancy means one; explicit
+        # nonfinite occupancy is an input error, never a silently omitted atom.
+        occupancy = table.occupancy.map(
+            lambda value: 1.0 if value in (None, "", ".", "?") else float(value)
+        ).to_numpy(float)
+        if not np.isfinite(occupancy).all():
+            raise ValueError("nonfinite occupancy")
+        table = table.assign(_occ=occupancy)
+        table = table[table._occ > 0].sort_values(
             "_occ", ascending=False, kind="stable"
         )
     return table.drop_duplicates(["label_asym_id", "pos", "label_atom_id"])
 
 
-def resolve_target(cfg, geometry_path=None):
+def resolve_target(cfg, geometry_path=None, *, surface_elevation=False):
     from omegaconf import OmegaConf
 
     from promera.inference.design import _map_epitope_residues
@@ -84,6 +102,7 @@ def resolve_target(cfg, geometry_path=None):
         )
 
     coords, keys, labels = [], [], []
+    heavy_coords, heavy_keys = [], []
     table = atom_table(path)
     for key, seq in sequences.items():
         source_id = (
@@ -124,6 +143,18 @@ def resolve_target(cfg, geometry_path=None):
                 raise ValueError(
                     f"sequence mismatch at {key}:{i + 1}; verify the structural correspondence"
                 )
+            rid = int(src_ids[j])
+            if surface_elevation:
+                residue_atoms = table[
+                    (table.label_asym_id == source_id) & (table.pos == rid)
+                ]
+                values = residue_atoms[["Cartn_x", "Cartn_y", "Cartn_z"]].to_numpy(
+                    float
+                )
+                if not np.isfinite(values).all():
+                    raise ValueError(f"nonfinite antigen coordinates at {key}:{i + 1}")
+                heavy_coords.extend(values.tolist())
+                heavy_keys.extend([(key, i + 1)] * len(values))
             ca = source["coords"][j]
             if not np.isfinite(ca).all():
                 continue
@@ -146,7 +177,28 @@ def resolve_target(cfg, geometry_path=None):
             f"epitope lacks mapped resolved Cα coordinates: {sorted(missing)}"
         )
     indices = [i for i, k in enumerate(keys) if k in site]
-    return dict(
+    legacy_frame, legacy_error = None, None
+    try:
+        legacy_frame = patch_frame(coords, indices)
+    except GeometryError as exc:
+        if not surface_elevation:
+            raise
+        legacy_error = str(exc)
+    frame = legacy_frame
+    if surface_elevation:
+        heavy = np.asarray(heavy_coords)
+        samples = [
+            heavy[[j for j, key in enumerate(heavy_keys) if key == keys[i]]].mean(0)
+            for i in indices
+        ]
+        frame = prospective_patch_frame(
+            coords,
+            indices,
+            heavy,
+            samples,
+            landmarks=legacy_frame["landmarks"] if legacy_frame is not None else None,
+        )
+    result = dict(
         version=1,
         target=input_path.stem,
         input=str(input_path.resolve()),
@@ -158,10 +210,21 @@ def resolve_target(cfg, geometry_path=None):
         labels=labels,
         coords=coords,
         selected=indices,
-        frame=patch_frame(coords, indices),
+        frame=frame,
         binder_chain=cfg["binder"]["chain"],
         framework=cfg["binder"]["framework"],
     )
+    if surface_elevation:
+        result.update(
+            version=2,
+            experiment_definition="surface_elevation_v1",
+            legacy_frame=legacy_frame,
+            legacy_frame_status="ok" if legacy_frame else "unavailable",
+            legacy_frame_error=legacy_error,
+            prospective_antigen_heavy_atom_count=len(heavy_coords),
+            prospective_sampling_residues=[keys[i] for i in indices],
+        )
+    return result
 
 
 def scaffold_from_cif(path, chain, pattern):

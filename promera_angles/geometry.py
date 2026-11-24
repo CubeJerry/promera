@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from scipy.spatial import cKDTree
 
-from experiments.pose_guidance.pose_geometry import AnchorClash, MIN_ANCHOR_SEPARATION_A, farthest_points, xyz
+from experiments.pose_guidance.pose_geometry import (
+    MIN_ANCHOR_SEPARATION_A,
+    AnchorClash,
+    farthest_points,
+    xyz,
+)
 
 
 class GeometryError(ValueError):
@@ -137,7 +144,11 @@ def scaffold_shape(ca, fixed, cdr):
     axes = basis(inward, lateral[extreme(np.linalg.norm(lateral, axis=1))])
     anchors = farthest_points(framework, tie_tolerance=1e-8)
     return dict(
-        fixed_indices=anchors, local_xyz=((framework[anchors] - tip) @ axes.T).tolist()
+        fixed_indices=anchors,
+        local_xyz=((framework[anchors] - tip) @ axes.T).tolist(),
+        scaffold_ca_local=((ca - tip) @ axes.T).tolist(),
+        framework_indices=list(map(int, fixed)),
+        cdr_indices=list(map(int, cdr)),
     )
 
 
@@ -165,7 +176,9 @@ def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None
     for step in range(24):
         candidate = (roll + step * np.pi / 12) % (2 * np.pi)
         rotation = basis(
-            -ray, np.cos(candidate) * transverse + np.sin(candidate) * np.cross(-ray, transverse)
+            -ray,
+            np.cos(candidate) * transverse
+            + np.sin(candidate) * np.cross(-ray, transverse),
         )
         anchors = local @ rotation + tip
         if targets is not None:
@@ -178,8 +191,14 @@ def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None
             azimuth_deg=float(np.degrees(phi)),
             roll_deg=float(np.degrees(candidate)),
             roll_attempts=step + 1,
+            **scaffold_placement_record(shape, rotation, tip, frame),
+            guidance_definition="legacy_placement_ray",
+            requested_legacy_tilt_deg=float(np.degrees(np.arccos(cos_theta))),
+            standoff_A=float(standoff),
         )
-    raise AnchorClash("all 24 sampled rolls have a cross-chain anchor separation <= 1 A")
+    raise AnchorClash(
+        "all 24 sampled rolls have a cross-chain anchor separation <= 1 A"
+    )
 
 
 def orientation(frame, fw, cdr):
@@ -190,4 +209,221 @@ def orientation(frame, fw, cdr):
         facing_deg=degrees(tip - center, -outward),
         pointing_to_patch_deg=degrees(tip - center, origin - center),
         framework_to_patch_A=float(np.linalg.norm(center - origin)),
+    )
+
+
+def signed_elevation(framework_ca: Any, cdr_ca: Any, normal: Any) -> float:
+    """Measure signed C→F elevation from all supplied framework and CDR Cαs."""
+    axis = unit(xyz(framework_ca).mean(0) - xyz(cdr_ca).mean(0))
+    return float(np.degrees(np.arcsin(np.clip(axis @ unit(np.asarray(normal)), -1, 1))))
+
+
+def scaffold_placement_record(
+    shape: dict[str, Any], rotation: Any, tip: Any, frame: dict[str, Any]
+) -> dict[str, Any]:
+    """Verify full scaffold centroids; old four-anchor plans remain legacy."""
+    if "scaffold_ca_local" not in shape:
+        return {}
+    local = xyz(shape["scaffold_ca_local"])
+    fw_array = np.asarray(shape["framework_indices"])
+    cdr_array = np.asarray(shape["cdr_indices"])
+    marks = np.asarray(shape["fixed_indices"])
+    for indices in (fw_array, cdr_array):
+        if (
+            indices.ndim != 1
+            or not len(indices)
+            or not np.issubdtype(indices.dtype, np.integer)
+            or (indices < 0).any()
+            or (indices >= len(local)).any()
+        ):
+            raise GeometryError("invalid full-scaffold framework/CDR mapping")
+    combined = np.concatenate((fw_array, cdr_array))
+    if len(combined) != len(local) or len(np.unique(combined)) != len(local):
+        raise GeometryError(
+            "framework/CDR mapping must partition the complete scaffold"
+        )
+    if (
+        marks.shape != (4,)
+        or not np.issubdtype(marks.dtype, np.integer)
+        or len(np.unique(marks)) != 4
+        or (marks < 0).any()
+        or (marks >= len(fw_array)).any()
+    ):
+        raise GeometryError("invalid framework landmark mapping")
+    encoded_local = xyz(shape["local_xyz"])
+    expected_local = local[fw_array[marks]]
+    if encoded_local.shape != expected_local.shape or not np.allclose(
+        encoded_local, expected_local, atol=1e-7, rtol=0
+    ):
+        raise GeometryError(
+            "framework landmarks disagree with full scaffold coordinates"
+        )
+    transformed = local @ rotation + tip
+    fw, cdr = fw_array.tolist(), cdr_array.tolist()
+    center = transformed[cdr].mean(0)
+    if not np.allclose(center, tip, atol=1e-7, rtol=0):
+        raise GeometryError(
+            "scaffold CDR centroid is inconsistent with the placement origin"
+        )
+    return dict(
+        realized_scaffold_elevation_deg=signed_elevation(
+            transformed[fw], transformed[cdr], frame["normal"]
+        ),
+        scaffold_framework_centroid_xyz=transformed[fw].mean(0).tolist(),
+        scaffold_cdr_centroid_xyz=center.tolist(),
+        scaffold_ca_xyz=transformed.tolist(),
+        scaffold_framework_indices=fw,
+        scaffold_cdr_indices=cdr,
+        patch_frame=frame,
+    )
+
+
+def elevation_placement(
+    frame: dict[str, Any],
+    shape: dict[str, Any],
+    interval: Any,
+    seed: int,
+    standoff: float = 6.0,
+    *,
+    target_anchors: Any | None = None,
+    cdr_lateral_offset: Any = (0.0, 0.0),
+) -> tuple[Any, dict[str, Any]]:
+    """Rotate the body about fixed C; sample elevation, azimuth and axial roll.
+
+    C = origin + standoff * n + optional tangent offsets, independently of body
+    inclination. Elevations are uniform in degrees; azimuth/roll are uniform on
+    the circle. Roll-only clash retries preserve elevation, azimuth and C.
+    """
+    lo, hi = map(float, interval)
+    offset = np.asarray(cdr_lateral_offset, dtype=float)
+    if (
+        not np.isfinite([lo, hi, standoff]).all()
+        or not -90 <= lo <= hi <= 90
+        or standoff <= 0
+        or offset.shape != (2,)
+        or not np.isfinite(offset).all()
+    ):
+        raise ValueError(
+            "require -90 <= elevation minimum <= maximum <= 90 and positive standoff"
+        )
+    if "scaffold_ca_local" not in shape:
+        raise ValueError(
+            "surface elevation requires a scaffold with complete framework/CDR mapping"
+        )
+    rng = np.random.default_rng(seed)
+    requested = float(rng.uniform(lo, hi))
+    phi, roll = rng.uniform(0, 2 * np.pi, size=2)
+    x, y, normal = basis(np.asarray(frame["normal"]), np.asarray(frame["tangent"]))
+    tip = (
+        np.asarray(frame["origin"]) + standoff * normal + offset[0] * x + offset[1] * y
+    )
+    radial = np.cos(phi) * x + np.sin(phi) * y
+    outward_axis = (
+        np.sin(np.radians(requested)) * normal + np.cos(np.radians(requested)) * radial
+    )
+    inward_axis = -outward_axis  # scaffold local +z is F→C, body axis is C→F.
+    transverse = -np.sin(phi) * x + np.cos(phi) * y
+    targets = None if target_anchors is None else xyz(target_anchors)
+    for step in range(24):
+        candidate = (roll + step * np.pi / 12) % (2 * np.pi)
+        rotation = basis(
+            inward_axis,
+            np.cos(candidate) * transverse
+            + np.sin(candidate) * np.cross(inward_axis, transverse),
+        )
+        anchors = xyz(shape["local_xyz"]) @ rotation + tip
+        if targets is not None:
+            distances = np.linalg.norm(anchors[:, None] - targets[None, :], axis=-1)
+            if distances.min() <= MIN_ANCHOR_SEPARATION_A:
+                continue
+        record = scaffold_placement_record(shape, rotation, tip, frame)
+        error = float(record["realized_scaffold_elevation_deg"] - requested)
+        if abs(error) > 2e-6:
+            raise GeometryError(
+                f"transformed scaffold elevation verification failed: {error} degrees"
+            )
+        return anchors, dict(
+            record,
+            guidance_definition="surface_elevation",
+            requested_elevation_deg=requested,
+            requested_elevation_interval_deg=[lo, hi],
+            scaffold_elevation_signed_error_deg=error,
+            scaffold_elevation_absolute_error_deg=abs(error),
+            elevation_sampling="uniform_degrees",
+            body_axis_c_to_f=outward_axis.tolist(),
+            cdr_placement_definition="fixed_centroid_at_patch_normal_standoff",
+            cdr_lateral_offset_A=offset.tolist(),
+            standoff_A=float(standoff),
+            azimuth_deg=float(np.degrees(phi)),
+            roll_deg=float(np.degrees(candidate)),
+            roll_attempts=step + 1,
+        )
+    raise AnchorClash(
+        "all 24 sampled rolls have a cross-chain anchor separation <= 1 A"
+    )
+
+
+def prospective_patch_frame(
+    coords: Any,
+    selected: Any,
+    antigen_heavy_xyz: Any,
+    sampling_points: Any,
+    *,
+    landmarks: list[int] | None = None,
+) -> dict[str, Any]:
+    """Build a prospective plane from one heavy-atom centroid per patch residue.
+
+    The origin is the unweighted mean of these sites. Density uses all represented
+    atoms on selected antigen chains. No scaffold or observed contacts enter this
+    estimate. Nonplanar landmarks are preferred; supported planar patches retain
+    numeric elevation with a reflection-ambiguity diagnostic.
+    """
+    from .footprint import estimate_surface_normal
+
+    target, sites = xyz(coords), xyz(sampling_points)
+    if len(sites) != len(selected) or not len(selected):
+        raise GeometryError(
+            "one prospective sampling point is required per selected residue"
+        )
+    diagnostics = estimate_surface_normal(antigen_heavy_xyz, sites)
+    if diagnostics["status"] != "ok":
+        raise GeometryError(f"prospective patch: {diagnostics['status']}")
+    normal = np.asarray(diagnostics["normal"], dtype=float)
+    origin = sites.mean(0)
+    offset = target - origin
+    near = np.flatnonzero(np.linalg.norm(offset, axis=1) <= 15.0 + 1e-8)
+    if len(near) < 4:
+        raise GeometryError("too few local target landmarks for sparse conditioning")
+    lateral = offset - np.outer(offset @ normal, normal)
+    tangent = unit(lateral[near[extreme(np.linalg.norm(lateral[near], axis=1))]])
+    if landmarks is None:
+        first = int(near[extreme(np.linalg.norm(offset[near], axis=1), False)])
+        difference = target[near] - target[first]
+        second = int(near[extreme(np.linalg.norm(difference, axis=1))])
+        line = unit(target[second] - target[first])
+        third = int(near[extreme(np.linalg.norm(np.cross(difference, line), axis=1))])
+        plane = unit(np.cross(line, target[third] - target[first]))
+        fourth = int(near[extreme(abs(difference @ plane))])
+        landmarks = [first, second, third, fourth]
+        if len(set(landmarks)) != 4:
+            landmarks = [
+                int(near[i]) for i in farthest_points(target[near], tie_tolerance=1e-8)
+            ]
+    rank = int(
+        np.linalg.matrix_rank(target[landmarks] - target[landmarks].mean(0), tol=1e-6)
+    )
+    return dict(
+        origin=origin.tolist(),
+        normal=normal.tolist(),
+        tangent=tangent.tolist(),
+        landmarks=landmarks,
+        neighbourhood=near.tolist(),
+        origin_definition="mean_of_selected_residue_heavy_atom_centroids",
+        sampling_definition="one_all_heavy_atom_centroid_per_selected_antigen_residue",
+        sampling_points=sites.tolist(),
+        density_scales_A=[4.0, 6.0],
+        normal_estimator="revised_footprint_angle_audit_v1",
+        diagnostics=diagnostics,
+        target_landmark_rank=rank,
+        target_landmark_reflection_ambiguous=rank < 3,
     )

@@ -25,19 +25,26 @@ model_cfg = OmegaConf.merge(
 )
 task_cfg = OmegaConf.merge(OmegaConf.load(args.task_config), OmegaConf.from_cli(extra))
 
-# Opt-in only. The ordinary CLI, including its output layout, remains the
-# entry point. Child jobs carry angle_trial and cannot re-enter this wrapper.
-if args.task == "promera.inference.Design" and (task_cfg.get("approach_angle") or {}).get("enabled", False):
-    from promera_angles.run import execute
+# Opt-in only. Child jobs use TargetedDesign and cannot re-enter orchestration.
+# Disabled experiments retain the ordinary task path below.
+if args.task == "promera.inference.Design":
+    legacy = task_cfg.get("approach_angle")
+    surface = task_cfg.get("surface_elevation")
+    for section_name, section in (("approach_angle", legacy), ("surface_elevation", surface)):
+        if section is not None and not OmegaConf.is_dict(section):
+            raise ValueError(f"{section_name} must be a mapping")
+    if (legacy or {}).get("enabled", False) or (surface or {}).get("enabled", False):
+        from promera_angles.run import execute, study_settings
 
-    execute(
-        OmegaConf.to_container(task_cfg, resolve=True),
-        task_cfg.output,
-        OmegaConf.to_container(task_cfg.approach_angle, resolve=True),
-        weights=args.weights,
-        model_settings=OmegaConf.to_container(model_cfg, resolve=True),
-    )
-    raise SystemExit(0)
+        prepared_task = OmegaConf.to_container(task_cfg, resolve=True)
+        execute(
+            prepared_task,
+            task_cfg.output,
+            study_settings(prepared_task),
+            weights=args.weights,
+            model_settings=OmegaConf.to_container(model_cfg, resolve=True),
+        )
+        raise SystemExit(0)
 
 import torch
 import pytorch_lightning as pl

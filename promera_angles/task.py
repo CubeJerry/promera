@@ -4,88 +4,16 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
 import torch
 
-from experiments.pose_guidance.pose_geometry import (
-    AnchorClash,
-    chain_sequence,
-    cross_distogram,
-    digest,
-    framework_map,
-    merge_distogram,
-)
-from experiments.pose_guidance.pose_task import UnconditionedRefoldMixin, sampling_seed
+from experiments.pose_guidance.pose_geometry import digest
+from experiments.pose_guidance.pose_task import sampling_seed
 from promera.data import utils as data_utils
 from promera.inference.design import Design, _sample_dir
 
 from .batches import accepted_batch
-from .geometry import placement
-
-
-def condition(feats, plan, seed, interval, standoff):
-    struct = feats["struct"]
-    offsets, n = {}, 0
-    for name, chain in struct.chains.items():
-        offsets[name] = n
-        n += len(chain.rname)
-    if n != len(feats["restype"]):
-        raise ValueError("angular landmarks require one token per protein residue")
-    keys = plan["keys"]
-
-    def token(key):
-        chain, pos = key
-        return offsets[chain] + pos - 1
-
-    expected = {token(keys[i]) for i in plan["selected"]}
-    actual = set()
-    for name, sequence in plan["sequences"].items():
-        if chain_sequence(struct.chains[name]) != sequence:
-            raise ValueError(f"runtime target sequence changed on {name}")
-        actual.update(
-            offsets[name] + int(i)
-            for i in np.flatnonzero(
-                feats["is_epitope"][offsets[name] : offsets[name] + len(sequence)]
-            )
-        )
-    if expected != actual:
-        raise ValueError(
-            "native epitope flags disagree with the plan; check the installed multichain adapter"
-        )
-    binder = plan["binder_chain"]
-    fw, cdr = framework_map(chain_sequence(struct.chains[binder]), plan["framework"])
-    record = dict(cdr_positions=[p + 1 for p in cdr])
-    if interval is None:
-        return record
-    marks = plan["frame"]["landmarks"]
-    shape = plan["shape"]
-    target_marks = np.asarray(plan["coords"])[marks]
-    try:
-        coords, guide = placement(plan["frame"], shape, interval, seed, standoff,
-                                  target_anchors=target_marks)
-        bins, mask, pairs = cross_distogram(
-            n,
-            [token(keys[i]) for i in marks],
-            [offsets[binder] + fw[i] for i in shape["fixed_indices"]],
-            target_marks,
-            coords,
-            16,
-        )
-    except AnchorClash as exc:
-        # Keep identical collate keys even when a batch contains rejected guides.
-        if "distogram_mask" not in feats:
-            feats["distogram_mask"] = np.zeros((n, n), dtype=bool)
-            feats["distogram_emb"] = np.zeros((n, n), dtype=np.int64)
-        return dict(record, guide_seed=seed, record_status="rejected_guide", reason=str(exc))
-    target_xyz = np.asarray(plan["coords"])
-    v = target_xyz - plan["frame"]["origin"]
-    along = v @ np.array(guide["ray"])
-    across = np.linalg.norm(v - np.outer(along, guide["ray"]), axis=1)
-    guide["ray_obstructed_ca_proxy"] = bool(
-        ((along > 4) & (along < standoff + 18) & (across < 4)).any()
-    )
-    merge_distogram(feats, bins, mask)
-    return dict(record, **guide, pairs=pairs)
+from .conditioning import condition
+from .refold import UnconditionedRefoldMixin
 
 
 class TargetedDesign(UnconditionedRefoldMixin, Design):
@@ -119,6 +47,10 @@ class TargetedDesign(UnconditionedRefoldMixin, Design):
             self.seed("angle", index),
             self.spec.interval,
             self.spec.standoff,
+            guidance_definition=self.spec.get(
+                "guidance_definition", "legacy_placement_ray"
+            ),
+            cdr_lateral_offset=self.spec.get("cdr_lateral_offset", [0, 0]),
         )
         return feats
 

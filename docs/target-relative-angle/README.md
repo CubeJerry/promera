@@ -1,5 +1,7 @@
 # Target-relative approach angles
 
+> **Legacy experiment documentation.** The angle/cone commands on this page keep their historical placement-ray or source-pose meanings. They are not surface-elevation requests. For the current signed nanobody approach angle, use the [surface-elevation study guide](../surface-elevation/README.md). In particular, old `--angle 0 20` and `--angle-range` commands are never reinterpreted as elevation.
+
 Use the ordinary VHH targeted-design input. Its target schema, selected chains, native epitope flags, framework, CDR lengths, inverse folder and ordinary target-template conditioning apply to both arms. No Atlas run, source complex or reference nanobody is required.
 
 ## Submit a pair from saved NOMINEE setups

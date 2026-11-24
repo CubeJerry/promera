@@ -1,5 +1,7 @@
 # Cross-chain pose conditioning: isolated Promera experiment
 
+> **Legacy experiment documentation.** The angle/cone commands on this page keep their historical placement-ray or source-pose meanings. They are not surface-elevation requests. For the current signed nanobody approach angle, use the [surface-elevation study guide](../../docs/surface-elevation/README.md). In particular, old `--angle 0 20` and `--angle-range` commands are never reinterpreted as elevation.
+
 **Experimental. CPU contract tests are not evidence that guidance improves designs.**
 This branch does not change the default Design task, model weights, sampler,
 production pipeline, or production image. Do not merge it as a validated feature.
