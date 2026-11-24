@@ -35,8 +35,15 @@ def atom_table(path):
     table = table[~table.label_seq_id.isin([".", "?"])].copy()
     table["pos"] = table.label_seq_id.astype(int)
     if "occupancy" in table:
-        table = table[table.occupancy.astype(float) > 0].copy()
-        table = table.assign(_occ=table.occupancy.astype(float)).sort_values(
+        # Match the revised audit: unspecified occupancy means one; explicit
+        # nonfinite occupancy is an input error, never a silently omitted atom.
+        occupancy = table.occupancy.map(
+            lambda value: 1.0 if value in (None, "", ".", "?") else float(value)
+        ).to_numpy(float)
+        if not np.isfinite(occupancy).all():
+            raise ValueError("nonfinite occupancy")
+        table = table.assign(_occ=occupancy)
+        table = table[table._occ > 0].sort_values(
             "_occ", ascending=False, kind="stable"
         )
     return table.drop_duplicates(["label_asym_id", "pos", "label_atom_id"])

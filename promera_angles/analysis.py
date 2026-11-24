@@ -104,6 +104,11 @@ def measurements(path: Path, plan: Row, cdr_ids: Any) -> tuple[Row, list[Row], A
     akeys = [
         (str(chain), int(pos)) for chain, pos in zip(antigen.label_asym_id, antigen.pos)
     ]
+    missing_requested = selected.difference(akeys) | {
+        key
+        for key, xyz in zip(akeys, at)
+        if key in selected and not np.isfinite(xyz).all()
+    }
     cdr_set = {int(index) + 1 for index in cdr}
     fp = measure_footprint(
         at,
@@ -147,16 +152,27 @@ def measurements(path: Path, plan: Row, cdr_ids: Any) -> tuple[Row, list[Row], A
         )
     contacted = {key for _, key in pairs}
     bcontacts = {pos for pos, _ in pairs}
+    cdr_patch_hit = any(pos in cdr_set and key in selected for pos, key in pairs)
     metrics.update(
         footprint_residue_keys=[list(key) for key in sorted(contacted)],
-        requested_site_contact=bool(selected & contacted) if usable else None,
+        requested_site_contact=(
+            bool(selected & contacted)
+            if usable and (selected & contacted or not missing_requested)
+            else None
+        ),
+        requested_site_coordinate_status=(
+            "missing_coordinates" if missing_requested else "ok"
+        ),
+        missing_requested_site_residues=[
+            list(key) for key in sorted(missing_requested)
+        ],
         patch_residues_contacted=len(selected & contacted) if usable else None,
         requested_site_residue_keys=[list(key) for key in sorted(selected & contacted)],
         heavy_atom_residue_pairs=len(pairs) if usable else None,
         cdr_residue_pairs=sum(pos in cdr_set for pos, _ in pairs) if usable else None,
         cdr_patch_contact=(
-            any(pos in cdr_set and key in selected for pos, key in pairs)
-            if usable
+            cdr_patch_hit
+            if usable and (cdr_patch_hit or not missing_requested)
             else None
         ),
         contacting_cdr_residues=len(bcontacts & cdr_set) if usable else None,
@@ -180,15 +196,23 @@ def measurements(path: Path, plan: Row, cdr_ids: Any) -> tuple[Row, list[Row], A
                 chain=chain,
                 runtime_position=pos,
                 **lookup.get((chain, pos), {}),
-                coordinate_present=(chain, pos) in set(akeys),
-                cdr_residues=len(hits & cdr_set) if usable else None,
-                framework_residues=len(hits - cdr_set) if usable else None,
+                coordinate_present=(chain, pos) not in missing_requested,
+                cdr_residues=(
+                    len(hits & cdr_set)
+                    if usable and (chain, pos) not in missing_requested
+                    else None
+                ),
+                framework_residues=(
+                    len(hits - cdr_set)
+                    if usable and (chain, pos) not in missing_requested
+                    else None
+                ),
             )
         )
     patch_ca = [tlookup[key] for key in selected if key in tlookup]
     metrics["patch_ca_pairs_8A"] = (
         sum(map(len, cKDTree(patch_ca).query_ball_point(bc, 8)))
-        if len(patch_ca) == len(selected)
+        if len(patch_ca) == len(selected) and np.isfinite(patch_ca).all()
         else None
     )
     # Existing badges retain their old centroid-pointing and contact definition.

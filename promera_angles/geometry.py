@@ -224,8 +224,42 @@ def scaffold_placement_record(
     """Verify full scaffold centroids; old four-anchor plans remain legacy."""
     if "scaffold_ca_local" not in shape:
         return {}
-    transformed = xyz(shape["scaffold_ca_local"]) @ rotation + tip
-    fw, cdr = shape["framework_indices"], shape["cdr_indices"]
+    local = xyz(shape["scaffold_ca_local"])
+    fw_array = np.asarray(shape["framework_indices"])
+    cdr_array = np.asarray(shape["cdr_indices"])
+    marks = np.asarray(shape["fixed_indices"])
+    for indices in (fw_array, cdr_array):
+        if (
+            indices.ndim != 1
+            or not len(indices)
+            or not np.issubdtype(indices.dtype, np.integer)
+            or (indices < 0).any()
+            or (indices >= len(local)).any()
+        ):
+            raise GeometryError("invalid full-scaffold framework/CDR mapping")
+    combined = np.concatenate((fw_array, cdr_array))
+    if len(combined) != len(local) or len(np.unique(combined)) != len(local):
+        raise GeometryError(
+            "framework/CDR mapping must partition the complete scaffold"
+        )
+    if (
+        marks.shape != (4,)
+        or not np.issubdtype(marks.dtype, np.integer)
+        or len(np.unique(marks)) != 4
+        or (marks < 0).any()
+        or (marks >= len(fw_array)).any()
+    ):
+        raise GeometryError("invalid framework landmark mapping")
+    encoded_local = xyz(shape["local_xyz"])
+    expected_local = local[fw_array[marks]]
+    if encoded_local.shape != expected_local.shape or not np.allclose(
+        encoded_local, expected_local, atol=1e-7, rtol=0
+    ):
+        raise GeometryError(
+            "framework landmarks disagree with full scaffold coordinates"
+        )
+    transformed = local @ rotation + tip
+    fw, cdr = fw_array.tolist(), cdr_array.tolist()
     center = transformed[cdr].mean(0)
     if not np.allclose(center, tip, atol=1e-7, rtol=0):
         raise GeometryError(
