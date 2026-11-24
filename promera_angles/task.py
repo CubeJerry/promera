@@ -8,12 +8,12 @@ import torch
 
 from experiments.pose_guidance.pose_geometry import digest
 from experiments.pose_guidance.pose_task import sampling_seed
-from .refold import UnconditionedRefoldMixin
 from promera.data import utils as data_utils
 from promera.inference.design import Design, _sample_dir
 
 from .batches import accepted_batch
 from .conditioning import condition
+from .refold import UnconditionedRefoldMixin
 
 
 class TargetedDesign(UnconditionedRefoldMixin, Design):
@@ -47,7 +47,9 @@ class TargetedDesign(UnconditionedRefoldMixin, Design):
             self.seed("angle", index),
             self.spec.interval,
             self.spec.standoff,
-            guidance_definition=self.spec.get("guidance_definition", "legacy_placement_ray"),
+            guidance_definition=self.spec.get(
+                "guidance_definition", "legacy_placement_ray"
+            ),
             cdr_lateral_offset=self.spec.get("cdr_lateral_offset", [0, 0]),
         )
         return feats

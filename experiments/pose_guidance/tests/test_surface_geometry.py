@@ -3,6 +3,7 @@
 The legacy reference is frozen at PR #15's original remote head. These tests
 need no checkpoints, Torch, real antigen sequences or GPU inference.
 """
+
 from __future__ import annotations
 
 import copy
@@ -52,7 +53,9 @@ def patch() -> dict[str, Any]:
     }
 
 
-def record_geometry(record: dict[str, Any]) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+def record_geometry(
+    record: dict[str, Any],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     coordinates = np.asarray(record["scaffold_ca_xyz"], dtype=float)
     framework = np.asarray(record["scaffold_framework_indices"], dtype=int)
     cdr = np.asarray(record["scaffold_cdr_indices"], dtype=int)
@@ -60,17 +63,25 @@ def record_geometry(record: dict[str, Any]) -> tuple[NDArray[np.float64], NDArra
 
 
 @pytest.mark.parametrize("requested", [-90.0, -60.0, 0.0, 30.0, 70.0, 90.0])
-def test_signed_elevation_verified_from_full_centroids_with_c_fixed(requested: float) -> None:
+def test_signed_elevation_verified_from_full_centroids_with_c_fixed(
+    requested: float,
+) -> None:
     coordinates, framework, cdr = scaffold()
     shape = scaffold_shape(coordinates, framework, cdr)
     frame = patch()
     anchors, record = elevation_placement(
-        frame, shape, [requested, requested], 17, 6.0,
+        frame,
+        shape,
+        [requested, requested],
+        17,
+        6.0,
         cdr_lateral_offset=(1.2, -0.6),
     )
     actual, f, c = record_geometry(record)
     assert record["requested_elevation_deg"] == pytest.approx(requested, abs=2e-6)
-    assert record["realized_scaffold_elevation_deg"] == pytest.approx(requested, abs=2e-6)
+    assert record["realized_scaffold_elevation_deg"] == pytest.approx(
+        requested, abs=2e-6
+    )
     assert elevation(f - c, frame["normal"]) == pytest.approx(requested, abs=2e-6)
     np.testing.assert_allclose(c, [8.2, -3.6, 8.0], atol=1e-9)
     np.testing.assert_allclose(record["scaffold_cdr_centroid_xyz"], c, atol=1e-9)
@@ -82,7 +93,9 @@ def test_signed_elevation_verified_from_full_centroids_with_c_fixed(requested: f
     np.testing.assert_allclose(new_distances, old_distances, atol=1e-9)
 
 
-def test_elevation_changes_body_inclination_without_changing_cdr_end_or_random_roll() -> None:
+def test_elevation_changes_body_inclination_without_changing_cdr_end_or_random_roll() -> (
+    None
+):
     coordinates, framework, cdr = scaffold()
     shape = scaffold_shape(coordinates, framework, cdr)
     records = [
@@ -94,7 +107,9 @@ def test_elevation_changes_body_inclination_without_changing_cdr_end_or_random_r
         np.testing.assert_allclose(centroid, centroids[0], atol=1e-9)
     assert len({round(record["azimuth_deg"], 10) for record in records}) == 1
     assert len({round(record["roll_deg"], 10) for record in records}) == 1
-    vectors = [record_geometry(record)[1] - record_geometry(record)[2] for record in records]
+    vectors = [
+        record_geometry(record)[1] - record_geometry(record)[2] for record in records
+    ]
     assert all(not np.allclose(vectors[0], vector) for vector in vectors[1:])
 
 
@@ -189,11 +204,19 @@ def test_corrupted_scaffold_is_rejected_before_encoding() -> None:
         elevation_placement(patch(), corrupted, [70, 90], 31)
 
 
-def antigen_patch() -> tuple[NDArray[np.float64], list[int], NDArray[np.float64], NDArray[np.float64]]:
+def antigen_patch() -> (
+    tuple[NDArray[np.float64], list[int], NDArray[np.float64], NDArray[np.float64]]
+):
     ca = np.array(
         [
-            [-4, -4, 0], [-4, 4, 0], [4, -4, 0], [4, 4, 0],
-            [-8, 0, 0], [8, 0, 0], [0, -8, 0], [0, 8, 0],
+            [-4, -4, 0],
+            [-4, 4, 0],
+            [4, -4, 0],
+            [4, 4, 0],
+            [-8, 0, 0],
+            [8, 0, 0],
+            [0, -8, 0],
+            [0, 8, 0],
         ],
         dtype=float,
     )
@@ -207,13 +230,13 @@ def antigen_patch() -> tuple[NDArray[np.float64], list[int], NDArray[np.float64]
     return ca, [0, 1, 2, 3], heavy, ca[:4].copy()
 
 
-def test_prospective_patch_uses_shared_density_and_explicit_residue_sampling_origin() -> None:
+def test_prospective_patch_uses_shared_density_and_explicit_residue_sampling_origin() -> (
+    None
+):
     ca, selected, heavy, sites = antigen_patch()
     sites += [0.3, -0.2, 0.7]
     expected = estimate_surface_normal(heavy, sites)
-    frame = prospective_patch_frame(
-        ca, selected, heavy, sites, landmarks=[0, 1, 2, 3]
-    )
+    frame = prospective_patch_frame(ca, selected, heavy, sites, landmarks=[0, 1, 2, 3])
     np.testing.assert_allclose(frame["origin"], sites.mean(0), atol=1e-10)
     np.testing.assert_allclose(frame["normal"], expected["normal"], atol=1e-10)
     assert frame["landmarks"] == [0, 1, 2, 3]
@@ -224,14 +247,14 @@ def test_prospective_patch_uses_shared_density_and_explicit_residue_sampling_ori
 
 def test_planar_patch_does_not_restrict_body_elevation() -> None:
     ca, selected, heavy, sites = antigen_patch()
-    frame = prospective_patch_frame(
-        ca, selected, heavy, sites, landmarks=[0, 1, 2, 3]
-    )
+    frame = prospective_patch_frame(ca, selected, heavy, sites, landmarks=[0, 1, 2, 3])
     coordinates, framework, cdr = scaffold()
     shape = scaffold_shape(coordinates, framework, cdr)
     for value in (-90, 0, 35, 90):
         _, record = elevation_placement(frame, shape, [value, value], 12)
-        assert record["realized_scaffold_elevation_deg"] == pytest.approx(value, abs=2e-6)
+        assert record["realized_scaffold_elevation_deg"] == pytest.approx(
+            value, abs=2e-6
+        )
 
 
 def test_prospective_patch_rigid_motion_preserves_its_frame() -> None:
@@ -250,7 +273,9 @@ def test_prospective_patch_rigid_motion_preserves_its_frame() -> None:
         moved["origin"], np.asarray(first["origin"]) @ rotation + translation, atol=1e-8
     )
     for key in ("normal", "tangent"):
-        np.testing.assert_allclose(moved[key], np.asarray(first[key]) @ rotation, atol=1e-8)
+        np.testing.assert_allclose(
+            moved[key], np.asarray(first[key]) @ rotation, atol=1e-8
+        )
     assert first["landmarks"] == moved["landmarks"]
 
 
@@ -265,7 +290,9 @@ def legacy_reference() -> Any:
 
 @pytest.mark.parametrize("bounds", [[0, 20], [30, 90], [135, 180]])
 @pytest.mark.parametrize("seed", [0, 31, 2026])
-def test_legacy_seeded_placement_exactly_matches_pr15(bounds: list[float], seed: int) -> None:
+def test_legacy_seeded_placement_exactly_matches_pr15(
+    bounds: list[float], seed: int
+) -> None:
     old = legacy_reference()
     coordinates, framework, cdr = scaffold()
     shape = scaffold_shape(coordinates, framework, cdr)

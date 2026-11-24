@@ -1,4 +1,5 @@
 """Exercise the real refold guard through a minimal base implementation."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -78,6 +79,8 @@ def test_original_forward_is_restored_after_downstream_refold_error() -> None:
     model = Model()
     original = model.pairformer_forward
     with pytest.raises(ValueError, match="downstream refold failure"):
-        GuardedRefold()._refold_batch(model, {"restype": np.zeros(7)}, downstream_error=True)
+        GuardedRefold()._refold_batch(
+            model, {"restype": np.zeros(7)}, downstream_error=True
+        )
     assert len(model.calls) == 1
     assert model.pairformer_forward == original

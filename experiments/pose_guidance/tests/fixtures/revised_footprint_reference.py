@@ -3,8 +3,8 @@
 The constants and geometry functions below retain the archive's arithmetic.
 They are deliberately independent of the production module. grid_surface is
 the supplied audit-test fixture. This is not the superseded MILTON estimator.
-Source: footprint_angle_audit.zip, ChatGPT Library version 1, file
-file_000000001098820b88565bee34a9fdfd, last modified 2026-11-24T11:41:02Z.
+Source: footprint_angle_audit.zip, revised 2026-11-24T11:41:02Z.
+Archive SHA256: a4a9969ff8e90a8ea452413f8a5f3570d4675f250debf40ab2a75bfac5f6ebe8
 The archive includes historical smoke CSVs but not those coordinate files.
 """
 import numpy as np

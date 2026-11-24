@@ -44,6 +44,7 @@ def fixture():
     ]
     return dict(
         target="synthetic",
+        synthetic_fixture=True,
         sequences=seqs,
         binder_chain="VHH",
         framework=PATTERN,

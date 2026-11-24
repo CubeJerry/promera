@@ -17,7 +17,6 @@ from typing import Any
 
 from .analysis import write_json
 
-
 DEFAULT_CDR_LENGTHS = {
     "cdrh1_length": "6-8",
     "cdrh2_length": "6-8",
@@ -56,8 +55,7 @@ def validate_author_selection(residues: str) -> None:
     """Require explicit chain groups before NOMINEE validates the residue IDs."""
     groups = residues.strip().split(";")
     if not groups or any(
-        re.fullmatch(r"\s*[^\s,:;]+\s*:\s*\S.*", group) is None
-        for group in groups
+        re.fullmatch(r"\s*[^\s,:;]+\s*:\s*\S.*", group) is None for group in groups
     ):
         raise ValueError(
             "Use chain-qualified AUTHOR residues, for example A:10,12-15;B:7"
@@ -90,25 +88,29 @@ def prepare_setups(
         build_promera_backend_config,
         write_promera_run_config,
     )
+    from utils.nominee_core.promera_residue_mapping import (
+        finalise_promera_run_epitope_mapping,
+    )
     from utils.nominee_core.promera_setup import (
         load_setup,
         normalise_antigen_setup,
         normalise_nanobody_setup,
         promera_length_spec,
     )
-    from utils.nominee_core.promera_residue_mapping import (
-        finalise_promera_run_epitope_mapping,
-    )
 
     if surface_study:
         validate_author_selection(residues)
     if nano_file is None and (not surface_study or defaults is None):
-        raise ValueError("A nanobody setup or explicit surface-study defaults is required")
+        raise ValueError(
+            "A nanobody setup or explicit surface-study defaults is required"
+        )
     if any(
         type(value) is not int or value <= 0
         for value in (sequences_per_parent, recycling_steps, diffusion_steps)
     ):
-        raise ValueError("Sequence, recycling and diffusion counts must be positive integers")
+        raise ValueError(
+            "Sequence, recycling and diffusion counts must be positive integers"
+        )
     root = root.resolve()
     inputs = root / "inputs"
     inputs.mkdir()
@@ -201,7 +203,9 @@ def prepare_setups(
     )
     print("CDR lengths:", cfg["binder"]["cdr_lengths"])
     if nano_file is None:
-        print("Framework: shipped caplacizumab/7eow default; use --nanobody-setup to override")
+        print(
+            "Framework: shipped caplacizumab/7eow default; use --nanobody-setup to override"
+        )
     return cfg
 
 
@@ -222,7 +226,9 @@ def main() -> None:
     p.add_argument("--diffusion-steps", type=int, default=200)
     args = p.parse_args()
     if args.list_inputs:
-        for path in dict.fromkeys(referenced_paths(args.antigen, args.antigen_cif).values()):
+        for path in dict.fromkeys(
+            referenced_paths(args.antigen, args.antigen_cif).values()
+        ):
             print(path)
     else:
         prepare_setups(

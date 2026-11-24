@@ -52,9 +52,21 @@ jobs:
           bash -n experiments/pose_guidance/launch_surface_elevation.sh
           bash -n experiments/pose_guidance/container.sh
           bash -n experiments/pose_guidance/approach_stage.sh
+      - name: Check experiment formatting and Python diagnostics
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys
+          modules = ('analysis conditioning demo footprint geometry refold report run '
+                     'settings setup_input structures task').split()
+          files = [f'promera_angles/{name}.py' for name in modules]
+          files += sorted(str(path) for path in pathlib.Path('experiments/pose_guidance/tests').glob('test_surface_*.py'))
+          files += ['experiments/pose_guidance/tests/test_elevation_analysis.py']
+          subprocess.run([sys.executable, '-m', 'black', '--check', '--workers', '1', *files], check=True)
+          subprocess.run([sys.executable, '-m', 'ruff', 'check', '--isolated', '--select', 'E4,E7,E9,F,I', *files], check=True)
+          PY
       - name: Test geometry, native features, actual launcher scripts and report lifecycle
         run: |
-          python -m pytest -q experiments/pose_guidance/tests --basetemp=surface-elevation-smoke --junitxml=surface-elevation-tests.xml --cov=promera_angles.footprint --cov=promera_angles.geometry --cov=promera_angles.conditioning --cov=promera_angles.settings --cov=promera_angles.refold --cov-report=term-missing --cov-report=json
+          python -m pytest -q -ra experiments/pose_guidance/tests --basetemp=surface-elevation-smoke --junitxml=surface-elevation-tests.xml --cov=promera_angles.footprint --cov=promera_angles.geometry --cov=promera_angles.conditioning --cov=promera_angles.settings --cov=promera_angles.refold --cov-report=term-missing --cov-report=json --cov-fail-under=90
       - name: Type-check new estimator and versioned settings
         run: python -m mypy --strict --ignore-missing-imports --follow-imports=skip promera_angles/footprint.py promera_angles/settings.py promera_angles/refold.py
       - uses: actions/upload-artifact@v4

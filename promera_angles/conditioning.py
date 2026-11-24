@@ -1,15 +1,31 @@
 """Generation-only sparse distance features, independent of the model runtime."""
+
 from __future__ import annotations
+
 from typing import Any
+
 import numpy as np
+
 from experiments.pose_guidance.pose_geometry import (
-    AnchorClash, chain_sequence, cross_distogram, framework_map, merge_distogram,
+    AnchorClash,
+    chain_sequence,
+    cross_distogram,
+    framework_map,
+    merge_distogram,
 )
-from .geometry import placement, elevation_placement, signed_elevation
+
+from .geometry import elevation_placement, placement, signed_elevation
+
 
 def condition(
-    feats: dict[str, Any], plan: dict[str, Any], seed: int, interval: Any, standoff: float,
-    *, guidance_definition: str = "legacy_placement_ray", cdr_lateral_offset: Any = (0.0, 0.0),
+    feats: dict[str, Any],
+    plan: dict[str, Any],
+    seed: int,
+    interval: Any,
+    standoff: float,
+    *,
+    guidance_definition: str = "legacy_placement_ray",
+    cdr_lateral_offset: Any = (0.0, 0.0),
 ) -> dict[str, Any]:
     """Add native sparse distance pairs after verifying the transformed scaffold."""
     struct = feats["struct"]
@@ -43,8 +59,10 @@ def condition(
     binder = plan["binder_chain"]
     fw, cdr = framework_map(chain_sequence(struct.chains[binder]), plan["framework"])
     record = dict(
-        cdr_positions=[p + 1 for p in cdr], framework_positions=[p + 1 for p in fw],
-        guide_seed=seed, guidance_definition="ordinary" if interval is None else guidance_definition,
+        cdr_positions=[p + 1 for p in cdr],
+        framework_positions=[p + 1 for p in fw],
+        guide_seed=seed,
+        guidance_definition="ordinary" if interval is None else guidance_definition,
         generation_only=True,
     )
     if interval is None:
@@ -52,26 +70,45 @@ def condition(
     if guidance_definition not in ("legacy_placement_ray", "surface_elevation"):
         raise ValueError(f"unknown guidance definition: {guidance_definition}")
     frame = plan["frame"]
-    if guidance_definition == "legacy_placement_ray" and plan.get("experiment_definition") == "surface_elevation_v1":
+    if (
+        guidance_definition == "legacy_placement_ray"
+        and plan.get("experiment_definition") == "surface_elevation_v1"
+    ):
         frame = plan.get("legacy_frame")
         if frame is None:
-            return rejected(feats, n, record, plan.get("legacy_frame_error", "legacy patch frame unavailable"))
+            return rejected(
+                feats,
+                n,
+                record,
+                plan.get("legacy_frame_error", "legacy patch frame unavailable"),
+            )
     marks = frame["landmarks"]
     shape = plan["shape"]
     target_marks = np.asarray(plan["coords"])[marks]
     try:
         if guidance_definition == "surface_elevation":
             coords, guide = elevation_placement(
-                frame, shape, interval, seed, standoff, target_anchors=target_marks,
+                frame,
+                shape,
+                interval,
+                seed,
+                standoff,
+                target_anchors=target_marks,
                 cdr_lateral_offset=cdr_lateral_offset,
             )
         else:
-            coords, guide = placement(frame, shape, interval, seed, standoff, target_anchors=target_marks)
+            coords, guide = placement(
+                frame, shape, interval, seed, standoff, target_anchors=target_marks
+            )
             if "scaffold_ca_xyz" in guide:
                 placed = np.asarray(guide["scaffold_ca_xyz"])
-                guide["legacy_frame_scaffold_elevation_deg"] = guide["realized_scaffold_elevation_deg"]
+                guide["legacy_frame_scaffold_elevation_deg"] = guide[
+                    "realized_scaffold_elevation_deg"
+                ]
                 guide["realized_scaffold_elevation_deg"] = signed_elevation(
-                    placed[shape["framework_indices"]], placed[shape["cdr_indices"]], plan["frame"]["normal"]
+                    placed[shape["framework_indices"]],
+                    placed[shape["cdr_indices"]],
+                    plan["frame"]["normal"],
                 )
                 guide["prospective_patch_frame"] = plan["frame"]
         bins, mask, pairs = cross_distogram(
@@ -100,7 +137,9 @@ def condition(
     return dict(record, **guide, pairs=pairs)
 
 
-def rejected(feats: dict[str, Any], n: int, record: dict[str, Any], reason: str) -> dict[str, Any]:
+def rejected(
+    feats: dict[str, Any], n: int, record: dict[str, Any], reason: str
+) -> dict[str, Any]:
     """Keep rejected parent metadata and collate keys, without adding a restraint."""
     if "distogram_mask" not in feats:
         feats["distogram_mask"] = np.zeros((n, n), dtype=bool)

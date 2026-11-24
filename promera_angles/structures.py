@@ -18,8 +18,12 @@ def atom_table(path):
         import gemmi
         import pandas as pd
 
-        category = gemmi.cif.read(str(path)).sole_block().find_mmcif_category("_atom_site.")
-        table = pd.DataFrame(list(category), columns=[t.split(".", 1)[1] for t in category.tags])
+        category = (
+            gemmi.cif.read(str(path)).sole_block().find_mmcif_category("_atom_site.")
+        )
+        table = pd.DataFrame(
+            list(category), columns=[t.split(".", 1)[1] for t in category.tags]
+        )
     else:
         opener = gzip.open if str(path).endswith(".gz") else open
         with opener(path, "rt") as handle:
@@ -134,8 +138,12 @@ def resolve_target(cfg, geometry_path=None, *, surface_elevation=False):
                 )
             rid = int(src_ids[j])
             if surface_elevation:
-                residue_atoms = table[(table.label_asym_id == source_id) & (table.pos == rid)]
-                values = residue_atoms[["Cartn_x", "Cartn_y", "Cartn_z"]].to_numpy(float)
+                residue_atoms = table[
+                    (table.label_asym_id == source_id) & (table.pos == rid)
+                ]
+                values = residue_atoms[["Cartn_x", "Cartn_y", "Cartn_z"]].to_numpy(
+                    float
+                )
                 if not np.isfinite(values).all():
                     raise ValueError(f"nonfinite antigen coordinates at {key}:{i + 1}")
                 heavy_coords.extend(values.tolist())
@@ -172,9 +180,15 @@ def resolve_target(cfg, geometry_path=None, *, surface_elevation=False):
     frame = legacy_frame
     if surface_elevation:
         heavy = np.asarray(heavy_coords)
-        samples = [heavy[[j for j, key in enumerate(heavy_keys) if key == keys[i]]].mean(0) for i in indices]
+        samples = [
+            heavy[[j for j, key in enumerate(heavy_keys) if key == keys[i]]].mean(0)
+            for i in indices
+        ]
         frame = prospective_patch_frame(
-            coords, indices, heavy, samples,
+            coords,
+            indices,
+            heavy,
+            samples,
             landmarks=legacy_frame["landmarks"] if legacy_frame is not None else None,
         )
     result = dict(
@@ -195,8 +209,10 @@ def resolve_target(cfg, geometry_path=None, *, surface_elevation=False):
     )
     if surface_elevation:
         result.update(
-            version=2, experiment_definition="surface_elevation_v1",
-            legacy_frame=legacy_frame, legacy_frame_status="ok" if legacy_frame else "unavailable",
+            version=2,
+            experiment_definition="surface_elevation_v1",
+            legacy_frame=legacy_frame,
+            legacy_frame_status="ok" if legacy_frame else "unavailable",
             legacy_frame_error=legacy_error,
             prospective_antigen_heavy_atom_count=len(heavy_coords),
             prospective_sampling_residues=[keys[i] for i in indices],

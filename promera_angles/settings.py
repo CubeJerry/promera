@@ -1,7 +1,9 @@
 """Versioned study settings: historical angles always remain placement-ray tilts."""
+
 from __future__ import annotations
 
 from typing import Any
+
 import numpy as np
 
 SURFACE_DEFINITION = "surface_elevation_v1"
@@ -11,12 +13,24 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
     """Validate without interpreting any historical interval as elevation."""
     result = dict(spec)
     allowed = {
-        "enabled", "paired", "interval_deg", "backbones", "replicates", "seed",
-        "target_structure", "standoff_A", "definition", "three_arms",
-        "elevation_interval_deg", "legacy_tilt_interval_deg", "cdr_lateral_offset_A",
+        "enabled",
+        "paired",
+        "interval_deg",
+        "backbones",
+        "replicates",
+        "seed",
+        "target_structure",
+        "standoff_A",
+        "definition",
+        "three_arms",
+        "elevation_interval_deg",
+        "legacy_tilt_interval_deg",
+        "cdr_lateral_offset_A",
     }
     if set(result) - allowed:
-        raise ValueError(f"unrecognised angle settings: {sorted(set(result) - allowed)}")
+        raise ValueError(
+            f"unrecognised angle settings: {sorted(set(result) - allowed)}"
+        )
     definition = result.get("definition")
     if definition not in (None, "legacy_placement_ray_v1", SURFACE_DEFINITION):
         raise ValueError(f"unrecognised angle definition: {definition}")
@@ -33,7 +47,9 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("three_arms requires an explicit elevation_interval_deg")
     if surface:
         if "interval_deg" in result:
-            raise ValueError("historical interval_deg is legacy tilt; specify elevation_interval_deg independently")
+            raise ValueError(
+                "historical interval_deg is legacy tilt; specify elevation_interval_deg independently"
+            )
         if definition == "legacy_placement_ray_v1":
             raise ValueError("legacy definition cannot carry elevation_interval_deg")
         result["definition"] = SURFACE_DEFINITION
@@ -45,7 +61,11 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
     required = [primary] if enabled else []
     if result.get("three_arms"):
         required.append("legacy_tilt_interval_deg")
-    for key in set(required) | {"interval_deg", "elevation_interval_deg", "legacy_tilt_interval_deg"}:
+    for key in set(required) | {
+        "interval_deg",
+        "elevation_interval_deg",
+        "legacy_tilt_interval_deg",
+    }:
         values = result.get(key)
         if key not in required and values is None:
             continue
@@ -54,7 +74,9 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
         low, high = map(float, values)
         minimum, maximum = (-90, 90) if key == "elevation_interval_deg" else (0, 180)
         if not np.isfinite([low, high]).all() or not minimum <= low <= high <= maximum:
-            raise ValueError(f"{key} requires {minimum} <= minimum <= maximum <= {maximum}")
+            raise ValueError(
+                f"{key} requires {minimum} <= minimum <= maximum <= {maximum}"
+            )
         result[key] = [low, high]
     standoff = float(result.get("standoff_A", 6))
     if not np.isfinite(standoff) or standoff <= 0:

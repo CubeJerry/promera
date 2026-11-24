@@ -15,9 +15,8 @@ from omegaconf import OmegaConf
 from experiments.pose_guidance.pose_geometry import digest
 
 from .analysis import analyse, write_json
-from .structures import resolve_target, scaffold_from_cif
 from .settings import SURFACE_DEFINITION, study_arms, validate_settings
-
+from .structures import resolve_target, scaffold_from_cif
 
 
 def study_settings(cfg):
@@ -33,11 +32,18 @@ def study_settings(cfg):
         raise ValueError("approach_angle and surface_elevation cannot both be enabled")
     if surface and not legacy.get("enabled"):
         if surface.get("definition") not in (None, SURFACE_DEFINITION):
-            raise ValueError("surface_elevation requires the surface_elevation_v1 definition")
+            raise ValueError(
+                "surface_elevation requires the surface_elevation_v1 definition"
+            )
         surface["definition"] = SURFACE_DEFINITION
         return surface
-    if legacy.get("definition") == SURFACE_DEFINITION or "elevation_interval_deg" in legacy:
-        raise ValueError("Use the surface_elevation block for elevation; approach_angle is legacy tilt")
+    if (
+        legacy.get("definition") == SURFACE_DEFINITION
+        or "elevation_interval_deg" in legacy
+    ):
+        raise ValueError(
+            "Use the surface_elevation block for elevation; approach_angle is legacy tilt"
+        )
     return legacy
 
 
@@ -47,22 +53,29 @@ def refold_budget(cfg):
     if not isinstance(inverse, dict):
         raise ValueError("inverse_folder must be a mapping")
     if inverse.get("type", "none") == "none":
-        return dict(sequences_per_parent=0, refolds_per_sequence=5, refolds_per_parent=0)
+        return dict(
+            sequences_per_parent=0, refolds_per_sequence=5, refolds_per_parent=0
+        )
     count = inverse.get("num_seqs", 1)
     if type(count) is not int or count <= 0:
         raise ValueError("inverse_folder.num_seqs must be a positive integer")
-    return dict(sequences_per_parent=count, refolds_per_sequence=5, refolds_per_parent=5 * count)
+    return dict(
+        sequences_per_parent=count, refolds_per_sequence=5, refolds_per_parent=5 * count
+    )
 
 
 def cli_settings(cfg, args):
     """Apply explicit CLI overrides and reject ambiguous old/new combinations."""
     spec = study_settings(cfg)
     surface_cli = (
-        args.elevation is not None or args.three_arms
+        args.elevation is not None
+        or args.three_arms
         or args.cdr_lateral_offset is not None
     )
     if args.angle is not None and (surface_cli or args.legacy_tilt is not None):
-        raise ValueError("--angle is historical placement-ray tilt; do not combine it with new guide flags")
+        raise ValueError(
+            "--angle is historical placement-ray tilt; do not combine it with new guide flags"
+        )
     if args.angle is not None and spec.get("definition") == SURFACE_DEFINITION:
         raise ValueError("--angle cannot override a surface_elevation configuration")
     if surface_cli and (
@@ -100,7 +113,9 @@ def cli_settings(cfg, args):
         spec["target_structure"] = str(args.target_structure.resolve())
     elif spec.get("target_structure"):
         target = Path(os.path.expandvars(str(spec["target_structure"]))).expanduser()
-        spec["target_structure"] = str((args.config.resolve().parent / target).resolve())
+        spec["target_structure"] = str(
+            (args.config.resolve().parent / target).resolve()
+        )
     return validate_settings(spec)
 
 
@@ -131,10 +146,13 @@ def split_jobs(root, count, reps, paired, enabled, seed, *, arms=None):
     if type(seed) is not int or not 0 <= seed < 2**32 - reps:
         raise ValueError("seed must fit an unsigned 32-bit stream for each replicate")
     selected = (
-        ["ordinary", "guided"] if paired else ["guided" if enabled else "ordinary"]
-    ) if arms is None else list(arms)
+        (["ordinary", "guided"] if paired else ["guided" if enabled else "ordinary"])
+        if arms is None
+        else list(arms)
+    )
     if (
-        not selected or len(set(selected)) != len(selected)
+        not selected
+        or len(set(selected)) != len(selected)
         or set(selected) - {"ordinary", "guided", "legacy_tilt", "surface_elevation"}
     ):
         raise ValueError("provide distinct recognized study arms")
@@ -143,11 +161,19 @@ def split_jobs(root, count, reps, paired, enabled, seed, *, arms=None):
     for rep in range(reps):
         size = count // reps + (rep < count % reps)
         for arm in selected:
-            output = root / arm / f"rep-{rep + 1:03}" if paired or arms is not None else root
-            jobs.append(dict(
-                arm=arm, replicate=rep + 1, seed=seed + rep,
-                count=size, start=offset, output=str(output),
-            ))
+            output = (
+                root / arm / f"rep-{rep + 1:03}" if paired or arms is not None else root
+            )
+            jobs.append(
+                dict(
+                    arm=arm,
+                    replicate=rep + 1,
+                    seed=seed + rep,
+                    count=size,
+                    start=offset,
+                    output=str(output),
+                )
+            )
         offset += size
     return jobs
 
@@ -238,17 +264,24 @@ def run_job(root, manifest, index):
         if digest(path) != manifest["plan_sha256"]:
             raise ValueError("prepared plan digest changed before sampling")
         plan = json.loads(path.read_text())
-        for field, sha in (("input", "schema_sha256"), ("structure", "structure_sha256")):
+        for field, sha in (
+            ("input", "schema_sha256"),
+            ("structure", "structure_sha256"),
+        ):
             if digest(plan[field]) != plan[sha]:
                 raise ValueError(f"prepared {field} changed before sampling")
         arm = job["arm"]
         if arm == "surface_elevation":
-            definition, interval = "surface_elevation", manifest["elevation_interval_deg"]
+            definition, interval = (
+                "surface_elevation",
+                manifest["elevation_interval_deg"],
+            )
         elif arm in ("legacy_tilt", "guided"):
             definition = "legacy_placement_ray"
             interval = (
                 manifest["legacy_tilt_interval_deg"]
-                if arm == "legacy_tilt" else manifest["interval_deg"]
+                if arm == "legacy_tilt"
+                else manifest["interval_deg"]
             )
         else:
             definition, interval = "ordinary", None
@@ -260,19 +293,28 @@ def run_job(root, manifest, index):
             interval=interval,
             guidance_definition=definition,
             standoff=manifest["settings"].get("standoff_A", 6.0),
-            cdr_lateral_offset=manifest["settings"].get("cdr_lateral_offset_A", [0.0, 0.0]),
+            cdr_lateral_offset=manifest["settings"].get(
+                "cdr_lateral_offset_A", [0.0, 0.0]
+            ),
         )
         config = dict(
-            cfg, output=job["output"], num_backbones=job["count"],
-            skip_existing=False, angle_trial=trial,
+            cfg,
+            output=job["output"],
+            num_backbones=job["count"],
+            skip_existing=False,
+            angle_trial=trial,
         )
         if config.get("nominee"):
             config["nominee"] = dict(
                 config["nominee"], summary_csv=str(meta / f"{tag}-summary.csv")
             )
         infer(
-            "promera_angles.task.TargetedDesign", config, meta / f"{tag}.json",
-            job["seed"], manifest.get("model_config"), manifest.get("weights"),
+            "promera_angles.task.TargetedDesign",
+            config,
+            meta / f"{tag}.json",
+            job["seed"],
+            manifest.get("model_config"),
+            manifest.get("weights"),
         )
     except Exception as exc:
         write_json(receipt, {"status": "failed", "reason": str(exc)})
@@ -295,10 +337,14 @@ def finish(root, manifest, plan, *, strict=True):
         try:
             statuses[tag] = (
                 json.loads(receipt.read_text())
-                if receipt.exists() else {"status": "missing"}
+                if receipt.exists()
+                else {"status": "missing"}
             )
         except (OSError, ValueError) as exc:
-            statuses[tag] = {"status": "failed", "reason": f"unreadable job receipt: {exc}"}
+            statuses[tag] = {
+                "status": "failed",
+                "reason": f"unreadable job receipt: {exc}",
+            }
     result["job_status"] = statuses
     if "preparation_status" in manifest:
         result["preparation_status"] = manifest["preparation_status"]
@@ -343,8 +389,12 @@ def execute(
     interval = spec.get("interval_deg")
     root = Path(root).resolve()
     jobs = split_jobs(
-        root, spec.get("backbones", cfg["num_backbones"]),
-        spec.get("replicates", 1), paired, enabled, spec.get("seed", 0),
+        root,
+        spec.get("backbones", cfg["num_backbones"]),
+        spec.get("replicates", 1),
+        paired,
+        enabled,
+        spec.get("seed", 0),
         **({"arms": study_arms(spec)} if surface else {}),
     )
     root.mkdir(parents=True, exist_ok=True)
@@ -357,39 +407,52 @@ def execute(
         # Keep the old positional API intact for legacy callers and reproducibility.
         plan = (
             resolve_target(cfg, spec.get("target_structure"), surface_elevation=True)
-            if surface else resolve_target(cfg, spec.get("target_structure"))
+            if surface
+            else resolve_target(cfg, spec.get("target_structure"))
         )
     except (KeyError, ValueError, OSError) as exc:
-        write_json(meta / "preview.json", dict(
-            status="unavailable",
-            definition=SURFACE_DEFINITION if surface else "legacy_placement_ray_v1",
-            reason=str(exc),
-        ))
+        write_json(
+            meta / "preview.json",
+            dict(
+                status="unavailable",
+                definition=SURFACE_DEFINITION if surface else "legacy_placement_ray_v1",
+                reason=str(exc),
+            ),
+        )
         raise
     if surface:
         plan.update(
-            version=2, experiment_definition=SURFACE_DEFINITION,
+            version=2,
+            experiment_definition=SURFACE_DEFINITION,
             elevation_interval_deg=spec.get("elevation_interval_deg"),
             legacy_tilt_interval_deg=spec.get("legacy_tilt_interval_deg"),
             **refold_budget(cfg),
         )
     collision = [
         Path(job["output"]) / plan["target"]
-        for job in jobs if (Path(job["output"]) / plan["target"]).exists()
+        for job in jobs
+        if (Path(job["output"]) / plan["target"]).exists()
     ]
     if collision:
         raise FileExistsError(
             f"existing target outputs at {collision[0]}; select a fresh output directory"
         )
     preview_data = dict(
-        version=2 if surface else 1, status="valid",
+        version=2 if surface else 1,
+        status="valid",
         definition=SURFACE_DEFINITION if surface else "legacy_placement_ray_v1",
-        kind="surface elevation above prospective patch" if surface else "legacy placement-ray tilt",
-        units="angstrom, degrees", standoff_A=spec["standoff_A"],
+        kind=(
+            "surface elevation above prospective patch"
+            if surface
+            else "legacy placement-ray tilt"
+        ),
+        units="angstrom, degrees",
+        standoff_A=spec["standoff_A"],
         **plan["frame"],
         selected=[
             dict(
-                chain=plan["keys"][i][0], position=plan["keys"][i][1],
+                chain=plan["keys"][i][0],
+                position=plan["keys"][i][1],
                 **plan["labels"][i],
             )
             for i in plan["selected"]
@@ -418,8 +481,12 @@ def execute(
     cfg["input"] = plan["input"]
     manifest = dict(
         version=2 if surface else 1,
-        experiment_definition=SURFACE_DEFINITION if surface else "legacy_placement_ray_v1",
-        jobs=jobs, settings=spec, base_config=cfg,
+        experiment_definition=(
+            SURFACE_DEFINITION if surface else "legacy_placement_ray_v1"
+        ),
+        jobs=jobs,
+        settings=spec,
+        base_config=cfg,
         model_config=str(model) if model else None,
         weights=str(weights or os.environ.get("PROMERA_WEIGHTS", "")),
         image=os.environ.get("POSE_RUNTIME_IMAGE"),
@@ -483,7 +550,9 @@ def execute(
             ) from failures[0]
         raise
     if failures:
-        raise RuntimeError(f"{len(failures)} study job(s) failed: {failures[0]}") from failures[0]
+        raise RuntimeError(
+            f"{len(failures)} study job(s) failed: {failures[0]}"
+        ) from failures[0]
 
 
 def main(argv=None):
@@ -492,43 +561,73 @@ def main(argv=None):
     p.add_argument("--auto-msa", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--layout-only", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
-        "--stage", choices=["all", "prepare", "job", "finish"],
-        default="all", help=argparse.SUPPRESS,
+        "--stage",
+        choices=["all", "prepare", "job", "finish"],
+        default="all",
+        help=argparse.SUPPRESS,
     )
-    p.add_argument("--config", type=Path, help="ordinary targeted Promera task YAML/JSON")
+    p.add_argument(
+        "--config", type=Path, help="ordinary targeted Promera task YAML/JSON"
+    )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument(
-        "--angle", nargs=2, type=float, metavar=("MIN", "MAX"),
+        "--angle",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
         help="historical placement-ray tilt in degrees; never surface elevation",
     )
     p.add_argument(
-        "--elevation", nargs=2, type=float, metavar=("MIN", "MAX"),
+        "--elevation",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
         help="signed C-to-F elevation above the prospective patch plane, -90 to +90",
     )
     p.add_argument(
-        "--legacy-tilt", nargs=2, type=float, metavar=("MIN", "MAX"),
+        "--legacy-tilt",
+        nargs=2,
+        type=float,
+        metavar=("MIN", "MAX"),
         help="explicit, independent legacy placement-ray tilt interval",
     )
     mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--paired", action="store_true", help="also run a matched ordinary control")
-    mode.add_argument("--ordinary", action="store_true", help="measure an ordinary control only")
     mode.add_argument(
-        "--three-arms", action="store_true",
+        "--paired", action="store_true", help="also run a matched ordinary control"
+    )
+    mode.add_argument(
+        "--ordinary", action="store_true", help="measure an ordinary control only"
+    )
+    mode.add_argument(
+        "--three-arms",
+        action="store_true",
         help="ordinary, legacy tilt and surface elevation with equal budgets",
     )
-    p.add_argument("--backbones", type=int, help="total per arm, divided across replicates")
+    p.add_argument(
+        "--backbones", type=int, help="total per arm, divided across replicates"
+    )
     p.add_argument("--replicates", type=int)
     p.add_argument("--seed", type=int)
-    p.add_argument("--standoff", type=float, help="CDR-end standoff from the patch in angstrom")
     p.add_argument(
-        "--cdr-lateral-offset", nargs=2, type=float, metavar=("DX", "DY"),
+        "--standoff", type=float, help="CDR-end standoff from the patch in angstrom"
+    )
+    p.add_argument(
+        "--cdr-lateral-offset",
+        nargs=2,
+        type=float,
+        metavar=("DX", "DY"),
         help="independent CDR-end displacement along patch tangents, in angstrom",
     )
     p.add_argument(
-        "--target-structure", type=Path,
+        "--target-structure",
+        type=Path,
         help="geometry-only mmCIF if distinct from target_template",
     )
-    p.add_argument("--preview", action="store_true", help="write intended geometry with no inference")
+    p.add_argument(
+        "--preview",
+        action="store_true",
+        help="write intended geometry with no inference",
+    )
     p.add_argument("--weights", type=Path)
     p.add_argument("--model-config", type=Path)
     args = p.parse_args(argv)
@@ -548,9 +647,12 @@ def main(argv=None):
         spec = cli_settings(cfg, args)
         surface = spec.get("definition") == SURFACE_DEFINITION
         jobs = split_jobs(
-            args.output, spec.get("backbones", cfg["num_backbones"]),
-            spec.get("replicates", 1), spec.get("paired", False),
-            spec.get("enabled", False), spec.get("seed", 0),
+            args.output,
+            spec.get("backbones", cfg["num_backbones"]),
+            spec.get("replicates", 1),
+            spec.get("paired", False),
+            spec.get("enabled", False),
+            spec.get("seed", 0),
             **({"arms": study_arms(spec)} if surface else {}),
         )
     except ValueError as exc:
@@ -560,11 +662,16 @@ def main(argv=None):
         return
     if args.auto_msa and not args.preview:
         from .cif_input import prepare_msas
+
         prepare_msas(cfg)
     execute(
-        cfg, args.output, spec,
-        model=args.model_config, weights=args.weights,
-        preview=args.preview, prepare_only=args.stage == "prepare",
+        cfg,
+        args.output,
+        spec,
+        model=args.model_config,
+        weights=args.weights,
+        preview=args.preview,
+        prepare_only=args.stage == "prepare",
     )
 
 

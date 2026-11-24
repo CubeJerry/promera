@@ -1,4 +1,5 @@
 """Benign synthetic geometry regressions and revised-audit numerical parity."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -53,9 +54,7 @@ def recipe_arrays(
     elif case.get("kind") == "narrow":
         sites = np.array([[x, 0.0, 0.0] for x in (-6, -2, 2, 6)])
     elif case.get("kind") == "disconnected":
-        sites = np.array(
-            [[x, y, 0.0] for x in (-14, -12, 12, 14) for y in (0, 4)]
-        )
+        sites = np.array([[x, y, 0.0] for x in (-14, -12, 12, 14) for y in (0, 4)])
     elif case.get("kind") == "opposing":
         rotation = Rotation.from_euler("y", 90, degrees=True).as_matrix()
         left = atoms @ rotation.T - [5, 0, 0]
@@ -96,7 +95,12 @@ def test_revised_audit_numerical_parity() -> None:
     cases.extend(
         {"kind": kind, "axis": [0, 0, 1]}
         for kind in (
-            "weak_site", "narrow", "disconnected", "opposing", "buried", "irregular"
+            "weak_site",
+            "narrow",
+            "disconnected",
+            "opposing",
+            "buried",
+            "irregular",
         )
     )
     for case in cases:
@@ -105,7 +109,7 @@ def test_revised_audit_numerical_parity() -> None:
         observed = footprint_geometry(cKDTree(atoms), sites, case["axis"])
         for key, value in expected.items():
             if isinstance(value, (float, int, np.number)):
-                assert observed[key] == pytest.approx(value, abs=2e-6), (case, key)
+                assert observed[key] == pytest.approx(value, abs=2e-6, rel=0), (case, key)
             else:
                 assert observed[key] == value, (case, key)
     # The fixture construction itself must agree with the supplied audit test.
@@ -159,7 +163,11 @@ def test_rotation_translation_and_prospective_normal_share_the_estimator() -> No
     )
     assert "footprint_elevation_deg" not in prospective
     assert "pose_label" not in prospective
-    for key in ("footprint_elevation_deg", "sensitivity_min_deg", "sensitivity_max_deg"):
+    for key in (
+        "footprint_elevation_deg",
+        "sensitivity_min_deg",
+        "sensitivity_max_deg",
+    ):
         assert after[key] == pytest.approx(before[key], abs=2e-6)
     np.testing.assert_allclose(prospective["normal"], before["normal"], atol=1e-12)
     np.testing.assert_allclose(
@@ -172,7 +180,9 @@ def test_rotation_translation_and_prospective_normal_share_the_estimator() -> No
 
 def test_one_weak_site_is_weighted_instead_of_vetoing_the_footprint() -> None:
     atoms, sites = grid_surface()
-    result = footprint_geometry(cKDTree(atoms), np.vstack((sites, [0, 0, -12])), [0, 0, 1])
+    result = footprint_geometry(
+        cKDTree(atoms), np.vstack((sites, [0, 0, -12])), [0, 0, 1]
+    )
     assert result["status"] == "ok"
     assert "weak_local_gradient" in result["detail"]
     assert result["footprint_elevation_deg"] > 89.9
@@ -239,14 +249,21 @@ def measure_complex(
     binder: NDArray[np.float64],
 ) -> dict[str, Any]:
     return measure_footprint(
-        atoms, keys, binder, list(range(1, 8)),
-        binder[[0, 2, 4, 6]], binder[[1, 3, 5]], [2, 4, 6],
+        atoms,
+        keys,
+        binder,
+        list(range(1, 8)),
+        binder[[0, 2, 4, 6]],
+        binder[[1, 3, 5]],
+        [2, 4, 6],
         antigen_ca=dict(zip(keys, atoms)),
     )
 
 
 @pytest.mark.parametrize("curve", [-0.012, -0.025, -0.06])
-def test_cdr_contacts_follow_a_convex_surface_with_an_oblique_body(curve: float) -> None:
+def test_cdr_contacts_follow_a_convex_surface_with_an_oblique_body(
+    curve: float,
+) -> None:
     atoms, keys, binder = complex_atoms(curve)
     result = measure_complex(atoms, keys, binder)
     assert result["status"] == "ok"
@@ -271,17 +288,20 @@ def test_all_cdr_residues_enter_axis_even_without_contacts() -> None:
     extra_cdr = np.array([[20.0, 0.0, 30.0]])
     full_cdr = np.vstack((binder[[1, 3, 5]], extra_cdr))
     result = measure_footprint(
-        atoms, keys, np.vstack((binder, extra_cdr)), list(range(1, 9)),
-        binder[[0, 2, 4, 6]], full_cdr, [2, 4, 6, 8],
+        atoms,
+        keys,
+        np.vstack((binder, extra_cdr)),
+        list(range(1, 9)),
+        binder[[0, 2, 4, 6]],
+        full_cdr,
+        [2, 4, 6, 8],
     )
     assert result["status"] == "ok"
     assert result["contacting_cdr_residues"] == 3
     assert 8 not in result["contacting_binder_positions"]
     np.testing.assert_allclose(result["cdr_centroid"], full_cdr.mean(0))
     assert result["footprint_elevation_deg"] == pytest.approx(
-        elevation(
-            binder[[0, 2, 4, 6]].mean(0) - full_cdr.mean(0), result["normal"]
-        ),
+        elevation(binder[[0, 2, 4, 6]].mean(0) - full_cdr.mean(0), result["normal"]),
         abs=1e-9,
     )
 
@@ -313,17 +333,32 @@ def test_absent_contacts_missing_coordinates_and_degenerate_axes() -> None:
     missing = binder.copy()
     missing[0, 0] = np.nan
     assert measure_complex(atoms, keys, missing)["status"] == "missing_coordinates"
-    assert measure_footprint(
-        [], [], binder, list(range(1, 8)), binder[:1], binder[1:2], [2]
-    )["status"] == "missing_coordinates"
-    assert measure_footprint(
-        atoms, keys, binder, list(range(1, 8)), [], binder[1:2], [2]
-    )["status"] == "missing_coordinates"
-    assert measure_footprint(
-        atoms, keys, binder, list(range(1, 8)), binder[1:2], binder[1:2], [2]
-    )["status"] == "undefined_vhh_axis"
-    assert footprint_geometry(cKDTree(atoms), [], [0, 0, 1])["status"] == "missing_coordinates"
-    assert footprint_geometry(cKDTree(atoms), [[0, 0, 0]], [0, 0, 0])["status"] == "undefined_vhh_axis"
+    assert (
+        measure_footprint(
+            [], [], binder, list(range(1, 8)), binder[:1], binder[1:2], [2]
+        )["status"]
+        == "missing_coordinates"
+    )
+    assert (
+        measure_footprint(atoms, keys, binder, list(range(1, 8)), [], binder[1:2], [2])[
+            "status"
+        ]
+        == "missing_coordinates"
+    )
+    assert (
+        measure_footprint(
+            atoms, keys, binder, list(range(1, 8)), binder[1:2], binder[1:2], [2]
+        )["status"]
+        == "undefined_vhh_axis"
+    )
+    assert (
+        footprint_geometry(cKDTree(atoms), [], [0, 0, 1])["status"]
+        == "missing_coordinates"
+    )
+    assert (
+        footprint_geometry(cKDTree(atoms), [[0, 0, 0]], [0, 0, 0])["status"]
+        == "undefined_vhh_axis"
+    )
     assert estimate_surface_normal([], [[0, 0, 0]])["status"] == "missing_coordinates"
     with pytest.raises(ValueError, match="different lengths"):
         measure_footprint(

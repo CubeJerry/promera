@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-import numpy as np
-from scipy.spatial import cKDTree
 from typing import Any
 
-from experiments.pose_guidance.pose_geometry import AnchorClash, MIN_ANCHOR_SEPARATION_A, farthest_points, xyz
+import numpy as np
+from scipy.spatial import cKDTree
+
+from experiments.pose_guidance.pose_geometry import (
+    MIN_ANCHOR_SEPARATION_A,
+    AnchorClash,
+    farthest_points,
+    xyz,
+)
 
 
 class GeometryError(ValueError):
@@ -138,9 +144,11 @@ def scaffold_shape(ca, fixed, cdr):
     axes = basis(inward, lateral[extreme(np.linalg.norm(lateral, axis=1))])
     anchors = farthest_points(framework, tie_tolerance=1e-8)
     return dict(
-        fixed_indices=anchors, local_xyz=((framework[anchors] - tip) @ axes.T).tolist(),
+        fixed_indices=anchors,
+        local_xyz=((framework[anchors] - tip) @ axes.T).tolist(),
         scaffold_ca_local=((ca - tip) @ axes.T).tolist(),
-        framework_indices=list(map(int, fixed)), cdr_indices=list(map(int, cdr)),
+        framework_indices=list(map(int, fixed)),
+        cdr_indices=list(map(int, cdr)),
     )
 
 
@@ -168,7 +176,9 @@ def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None
     for step in range(24):
         candidate = (roll + step * np.pi / 12) % (2 * np.pi)
         rotation = basis(
-            -ray, np.cos(candidate) * transverse + np.sin(candidate) * np.cross(-ray, transverse)
+            -ray,
+            np.cos(candidate) * transverse
+            + np.sin(candidate) * np.cross(-ray, transverse),
         )
         anchors = local @ rotation + tip
         if targets is not None:
@@ -186,7 +196,9 @@ def placement(frame, shape, interval, seed, standoff=6.0, *, target_anchors=None
             requested_legacy_tilt_deg=float(np.degrees(np.arccos(cos_theta))),
             standoff_A=float(standoff),
         )
-    raise AnchorClash("all 24 sampled rolls have a cross-chain anchor separation <= 1 A")
+    raise AnchorClash(
+        "all 24 sampled rolls have a cross-chain anchor separation <= 1 A"
+    )
 
 
 def orientation(frame, fw, cdr):
@@ -198,7 +210,6 @@ def orientation(frame, fw, cdr):
         pointing_to_patch_deg=degrees(tip - center, origin - center),
         framework_to_patch_A=float(np.linalg.norm(center - origin)),
     )
-
 
 
 def signed_elevation(framework_ca: Any, cdr_ca: Any, normal: Any) -> float:
@@ -217,7 +228,9 @@ def scaffold_placement_record(
     fw, cdr = shape["framework_indices"], shape["cdr_indices"]
     center = transformed[cdr].mean(0)
     if not np.allclose(center, tip, atol=1e-7, rtol=0):
-        raise GeometryError("scaffold CDR centroid is inconsistent with the placement origin")
+        raise GeometryError(
+            "scaffold CDR centroid is inconsistent with the placement origin"
+        )
     return dict(
         realized_scaffold_elevation_deg=signed_elevation(
             transformed[fw], transformed[cdr], frame["normal"]
@@ -231,10 +244,14 @@ def scaffold_placement_record(
     )
 
 
-
 def elevation_placement(
-    frame: dict[str, Any], shape: dict[str, Any], interval: Any, seed: int,
-    standoff: float = 6.0, *, target_anchors: Any | None = None,
+    frame: dict[str, Any],
+    shape: dict[str, Any],
+    interval: Any,
+    seed: int,
+    standoff: float = 6.0,
+    *,
+    target_anchors: Any | None = None,
     cdr_lateral_offset: Any = (0.0, 0.0),
 ) -> tuple[Any, dict[str, Any]]:
     """Rotate the body about fixed C; sample elevation, azimuth and axial roll.
@@ -245,18 +262,31 @@ def elevation_placement(
     """
     lo, hi = map(float, interval)
     offset = np.asarray(cdr_lateral_offset, dtype=float)
-    if (not np.isfinite([lo, hi, standoff]).all() or not -90 <= lo <= hi <= 90
-            or standoff <= 0 or offset.shape != (2,) or not np.isfinite(offset).all()):
-        raise ValueError("require -90 <= elevation minimum <= maximum <= 90 and positive standoff")
+    if (
+        not np.isfinite([lo, hi, standoff]).all()
+        or not -90 <= lo <= hi <= 90
+        or standoff <= 0
+        or offset.shape != (2,)
+        or not np.isfinite(offset).all()
+    ):
+        raise ValueError(
+            "require -90 <= elevation minimum <= maximum <= 90 and positive standoff"
+        )
     if "scaffold_ca_local" not in shape:
-        raise ValueError("surface elevation requires a scaffold with complete framework/CDR mapping")
+        raise ValueError(
+            "surface elevation requires a scaffold with complete framework/CDR mapping"
+        )
     rng = np.random.default_rng(seed)
     requested = float(rng.uniform(lo, hi))
     phi, roll = rng.uniform(0, 2 * np.pi, size=2)
     x, y, normal = basis(np.asarray(frame["normal"]), np.asarray(frame["tangent"]))
-    tip = np.asarray(frame["origin"]) + standoff * normal + offset[0] * x + offset[1] * y
+    tip = (
+        np.asarray(frame["origin"]) + standoff * normal + offset[0] * x + offset[1] * y
+    )
     radial = np.cos(phi) * x + np.sin(phi) * y
-    outward_axis = np.sin(np.radians(requested)) * normal + np.cos(np.radians(requested)) * radial
+    outward_axis = (
+        np.sin(np.radians(requested)) * normal + np.cos(np.radians(requested)) * radial
+    )
     inward_axis = -outward_axis  # scaffold local +z is F→C, body axis is C→F.
     transverse = -np.sin(phi) * x + np.cos(phi) * y
     targets = None if target_anchors is None else xyz(target_anchors)
@@ -264,7 +294,8 @@ def elevation_placement(
         candidate = (roll + step * np.pi / 12) % (2 * np.pi)
         rotation = basis(
             inward_axis,
-            np.cos(candidate) * transverse + np.sin(candidate) * np.cross(inward_axis, transverse),
+            np.cos(candidate) * transverse
+            + np.sin(candidate) * np.cross(inward_axis, transverse),
         )
         anchors = xyz(shape["local_xyz"]) @ rotation + tip
         if targets is not None:
@@ -274,23 +305,37 @@ def elevation_placement(
         record = scaffold_placement_record(shape, rotation, tip, frame)
         error = float(record["realized_scaffold_elevation_deg"] - requested)
         if abs(error) > 2e-6:
-            raise GeometryError(f"transformed scaffold elevation verification failed: {error} degrees")
+            raise GeometryError(
+                f"transformed scaffold elevation verification failed: {error} degrees"
+            )
         return anchors, dict(
-            record, guidance_definition="surface_elevation",
-            requested_elevation_deg=requested, requested_elevation_interval_deg=[lo, hi],
-            scaffold_elevation_signed_error_deg=error, scaffold_elevation_absolute_error_deg=abs(error),
-            elevation_sampling="uniform_degrees", body_axis_c_to_f=outward_axis.tolist(),
+            record,
+            guidance_definition="surface_elevation",
+            requested_elevation_deg=requested,
+            requested_elevation_interval_deg=[lo, hi],
+            scaffold_elevation_signed_error_deg=error,
+            scaffold_elevation_absolute_error_deg=abs(error),
+            elevation_sampling="uniform_degrees",
+            body_axis_c_to_f=outward_axis.tolist(),
             cdr_placement_definition="fixed_centroid_at_patch_normal_standoff",
-            cdr_lateral_offset_A=offset.tolist(), standoff_A=float(standoff),
-            azimuth_deg=float(np.degrees(phi)), roll_deg=float(np.degrees(candidate)), roll_attempts=step + 1,
+            cdr_lateral_offset_A=offset.tolist(),
+            standoff_A=float(standoff),
+            azimuth_deg=float(np.degrees(phi)),
+            roll_deg=float(np.degrees(candidate)),
+            roll_attempts=step + 1,
         )
-    raise AnchorClash("all 24 sampled rolls have a cross-chain anchor separation <= 1 A")
-
+    raise AnchorClash(
+        "all 24 sampled rolls have a cross-chain anchor separation <= 1 A"
+    )
 
 
 def prospective_patch_frame(
-    coords: Any, selected: Any, antigen_heavy_xyz: Any, sampling_points: Any,
-    *, landmarks: list[int] | None = None,
+    coords: Any,
+    selected: Any,
+    antigen_heavy_xyz: Any,
+    sampling_points: Any,
+    *,
+    landmarks: list[int] | None = None,
 ) -> dict[str, Any]:
     """Build a prospective plane from one heavy-atom centroid per patch residue.
 
@@ -303,7 +348,9 @@ def prospective_patch_frame(
 
     target, sites = xyz(coords), xyz(sampling_points)
     if len(sites) != len(selected) or not len(selected):
-        raise GeometryError("one prospective sampling point is required per selected residue")
+        raise GeometryError(
+            "one prospective sampling point is required per selected residue"
+        )
     diagnostics = estimate_surface_normal(antigen_heavy_xyz, sites)
     if diagnostics["status"] != "ok":
         raise GeometryError(f"prospective patch: {diagnostics['status']}")
@@ -325,14 +372,24 @@ def prospective_patch_frame(
         fourth = int(near[extreme(abs(difference @ plane))])
         landmarks = [first, second, third, fourth]
         if len(set(landmarks)) != 4:
-            landmarks = [int(near[i]) for i in farthest_points(target[near], tie_tolerance=1e-8)]
-    rank = int(np.linalg.matrix_rank(target[landmarks] - target[landmarks].mean(0), tol=1e-6))
+            landmarks = [
+                int(near[i]) for i in farthest_points(target[near], tie_tolerance=1e-8)
+            ]
+    rank = int(
+        np.linalg.matrix_rank(target[landmarks] - target[landmarks].mean(0), tol=1e-6)
+    )
     return dict(
-        origin=origin.tolist(), normal=normal.tolist(), tangent=tangent.tolist(),
-        landmarks=landmarks, neighbourhood=near.tolist(),
+        origin=origin.tolist(),
+        normal=normal.tolist(),
+        tangent=tangent.tolist(),
+        landmarks=landmarks,
+        neighbourhood=near.tolist(),
         origin_definition="mean_of_selected_residue_heavy_atom_centroids",
         sampling_definition="one_all_heavy_atom_centroid_per_selected_antigen_residue",
-        sampling_points=sites.tolist(), density_scales_A=[4.0, 6.0],
-        normal_estimator="revised_footprint_angle_audit_v1", diagnostics=diagnostics,
-        target_landmark_rank=rank, target_landmark_reflection_ambiguous=rank < 3,
+        sampling_points=sites.tolist(),
+        density_scales_A=[4.0, 6.0],
+        normal_estimator="revised_footprint_angle_audit_v1",
+        diagnostics=diagnostics,
+        target_landmark_rank=rank,
+        target_landmark_reflection_ambiguous=rank < 3,
     )

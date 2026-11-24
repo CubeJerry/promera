@@ -4,12 +4,13 @@ The same antigen-only density estimator supports prospective patch construction
 and independent observed-footprint measurements. Atom inputs are represented
 heavy atoms. Numerical reference fixtures live under the experiment tests.
 """
+
 from __future__ import annotations
 
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, TypeAlias
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -26,8 +27,8 @@ MAX_P80_DEG = 55.0
 MIN_LATERAL_RMS_A = 1.5
 CONNECT_A = 12.0
 ESTIMATOR = "revised_footprint_density_4_6A_v1"
-ResidueKey = tuple[str, int]
-FloatArray = NDArray[np.float64]
+ResidueKey: TypeAlias = tuple[str, int]
+FloatArray: TypeAlias = NDArray[np.float64]
 
 
 def unit(vector: ArrayLike) -> FloatArray:
@@ -100,7 +101,9 @@ def _surface_geometry(
             return dict(qc, status="no_resolved_outward_direction")
         coherence.append(float(np.linalg.norm(total) / lengths.sum()))
         if coherence[-1] < 0.15:
-            return dict(qc, status="opposing_surface_normals", coherence_min=min(coherence))
+            return dict(
+                qc, status="opposing_surface_normals", coherence_min=min(coherence)
+            )
         normal = unit(total)
         valid = lengths > 1e-8
         deviations = np.degrees(
@@ -122,7 +125,9 @@ def _surface_geometry(
                 if axis is not None:
                     sensitivity.extend(
                         np.degrees(
-                            np.arcsin(np.clip((omitted[valid] @ axis) / norms[valid], -1, 1))
+                            np.arcsin(
+                                np.clip((omitted[valid] @ axis) / norms[valid], -1, 1)
+                            )
                         ).tolist()
                     )
     qc.update(
@@ -195,7 +200,12 @@ def regions(
         if any(type(p) is not int for p in saved):
             raise ValueError("expected integer saved CDR positions")
         mask = {p - 1 for p in saved}
-        if not mask or len(mask) != len(saved) or min(mask) < 0 or max(mask) >= len(seq):
+        if (
+            not mask
+            or len(mask) != len(saved)
+            or min(mask) < 0
+            or max(mask) >= len(seq)
+        ):
             raise ValueError("invalid saved CDR positions")
         matches = re.findall(
             r"[^|]+", "".join("|" if i in mask else aa for i, aa in enumerate(seq))
@@ -262,9 +272,7 @@ def footprint_geometry(
         raise
 
 
-def estimate_surface_normal(
-    antigen_xyz: ArrayLike, sites: ArrayLike
-) -> dict[str, Any]:
+def estimate_surface_normal(antigen_xyz: ArrayLike, sites: ArrayLike) -> dict[str, Any]:
     """Estimate a prospective normal without a VHH or laboratory-frame axis.
 
     The caller chooses and records patch sampling points. Density scales,
@@ -305,8 +313,10 @@ def measure_footprint(
     fw, cdr = _coordinates(framework_ca), _coordinates(cdr_ca)
     if len(at) != len(antigen_keys) or len(bt) != len(binder_positions):
         raise ValueError("atom coordinates and residue labels have different lengths")
-    if not len(at) or not len(bt) or not all(
-        np.isfinite(array).all() for array in (at, bt, fw, cdr)
+    if (
+        not len(at)
+        or not len(bt)
+        or not all(np.isfinite(array).all() for array in (at, bt, fw, cdr))
     ):
         return {"status": "missing_coordinates"}
     keys = [(str(chain), int(position)) for chain, position in antigen_keys]

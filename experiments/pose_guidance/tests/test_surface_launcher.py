@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -17,7 +17,6 @@ from promera_angles.setup_input import (
     referenced_paths,
     validate_author_selection,
 )
-
 
 REPO = Path(__file__).resolve().parents[3]
 LAUNCHER = REPO / "experiments/pose_guidance/launch_surface_elevation.sh"
@@ -48,10 +47,7 @@ def host_standins(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     setup.write_text("kind: nominee_antigen_setup\n")
     log = tmp_path / "calls.jsonl"
     apptainer = binaries / "apptainer"
-    apptainer.write_text(
-        f"#!{sys.executable}\n"
-        + textwrap.dedent(
-            """
+    apptainer.write_text(f"#!{sys.executable}\n" + textwrap.dedent("""
             import json, os, pathlib, sys
             args = sys.argv[1:]
             with open(os.environ['LAUNCH_TEST_LOG'], 'a') as handle:
@@ -65,15 +61,10 @@ def host_standins(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
                     (root / 'inputs/targeted.json').write_text('{}')
             elif '--layout-only' in payload:
                 print(3 * int(payload[payload.index('--replicates') + 1]))
-            """
-        )
-    )
+            """))
     apptainer.chmod(0o755)
     scheduler = binaries / "sbatch"
-    scheduler.write_text(
-        f"#!{sys.executable}\n"
-        + textwrap.dedent(
-            """
+    scheduler.write_text(f"#!{sys.executable}\n" + textwrap.dedent("""
             import json, os, pathlib, sys
             path = pathlib.Path(os.environ['LAUNCH_TEST_LOG'])
             records = [json.loads(line) for line in path.read_text().splitlines()]
@@ -81,9 +72,7 @@ def host_standins(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
             with path.open('a') as handle:
                 handle.write(json.dumps({'kind': 'submit', 'args': sys.argv[1:]}) + '\\n')
             print(str(job) + ';milton')
-            """
-        )
-    )
+            """))
     scheduler.chmod(0o755)
     env = dict(os.environ)
     env.pop("SLURM_JOB_ID", None)
@@ -116,9 +105,21 @@ def test_real_launcher_prompt_and_three_arm_scheduler(
     env, setup, log = host_standins
     out = tmp_path / "study with spaces"
     result = invoke(
-        env, setup, out,
-        "--elevation", "70", "90", "--legacy-tilt", "0", "20",
-        "--backbones", "7", "--replicates", "3", "--seed", "13",
+        env,
+        setup,
+        out,
+        "--elevation",
+        "70",
+        "90",
+        "--legacy-tilt",
+        "0",
+        "20",
+        "--backbones",
+        "7",
+        "--replicates",
+        "3",
+        "--seed",
+        "13",
         stdin="A:10,12-15;B:7\n",
     )
     assert result.returncode == 0, result.stderr
@@ -126,8 +127,10 @@ def test_real_launcher_prompt_and_three_arm_scheduler(
     assert f"Report: {out}/analysis/report.html" in result.stdout
     records = [json.loads(line) for line in log.read_text().splitlines()]
     preparation = next(
-        row["args"] for row in records
-        if row["kind"] == "container" and "promera_angles.setup_input" in row["args"]
+        row["args"]
+        for row in records
+        if row["kind"] == "container"
+        and "promera_angles.setup_input" in row["args"]
         and "--list-inputs" not in row["args"]
     )
     assert "A:10,12-15;B:7" in preparation
@@ -212,29 +215,45 @@ def test_nominee_setup_uses_author_numbers_and_default_framework(
     if "_atom_site.B_iso_or_equiv" not in text:
         cif.write_text(
             "\n".join(
-                line[:-1] + "20 1"
-                if line.startswith("ATOM ")
-                else line.replace(
-                    "_atom_site.pdbx_PDB_model_num",
-                    "_atom_site.B_iso_or_equiv\n_atom_site.pdbx_PDB_model_num",
+                (
+                    line[:-1] + "20 1"
+                    if line.startswith("ATOM ")
+                    else line.replace(
+                        "_atom_site.pdbx_PDB_model_num",
+                        "_atom_site.B_iso_or_equiv\n_atom_site.pdbx_PDB_model_num",
+                    )
                 )
                 for line in text.splitlines()
-            ) + "\n"
+            )
+            + "\n"
         )
     setup = tmp_path / "antigen_setup.json"
-    setup.write_text(json.dumps({
-        "kind": "nominee_antigen_setup", "schema_version": 3,
-        "antigen_cif": "antigen.cif", "template_cif": "antigen.cif",
-        "target_chain": "A", "target_chains": ["A", "B"], "template_chain": "A",
-        "epitope_numbering": "runtime", "epitope_residues": "A:1",
-        "epitope_residue_map": {"A": [1]},
-    }))
+    setup.write_text(
+        json.dumps(
+            {
+                "kind": "nominee_antigen_setup",
+                "schema_version": 3,
+                "antigen_cif": "antigen.cif",
+                "template_cif": "antigen.cif",
+                "target_chain": "A",
+                "target_chains": ["A", "B"],
+                "template_chain": "A",
+                "epitope_numbering": "runtime",
+                "epitope_residues": "A:1",
+                "epitope_residue_map": {"A": [1]},
+            }
+        )
+    )
     original = setup.read_bytes()
     out = tmp_path / "study"
     out.mkdir()
     cfg = prepare_setups(
-        setup, None, "A:38,40;B:39", out,
-        surface_study=True, defaults=REPO / "examples/design_vhh.yaml",
+        setup,
+        None,
+        "A:38,40;B:39",
+        out,
+        surface_study=True,
+        defaults=REPO / "examples/design_vhh.yaml",
     )
     run = json.loads((out / "inputs/nominee_run.json").read_text())
     assert run["epitope_numbering"] == "author"
@@ -245,7 +264,9 @@ def test_nominee_setup_uses_author_numbers_and_default_framework(
     assert cfg["inverse_folder"]["type"] == "solublempnn"
     assert "approach_angle" not in cfg
     assert cfg["binder"]["cdr_lengths"] == {
-        "cdrh1": [6, 8], "cdrh2": [6, 8], "cdrh3": [8, 20]
+        "cdrh1": [6, 8],
+        "cdrh2": [6, 8],
+        "cdrh3": [8, 20],
     }
     assert setup.read_bytes() == original
     assert Path(cfg["target_template"]["path"]).is_file()
@@ -258,18 +279,29 @@ def test_reference_override_regenerates_schema_without_stale_paths(
     tmp_path: Path, nominee_source: None
 ) -> None:
     setup = tmp_path / "antigen_setup.json"
-    setup.write_text(json.dumps({
-        "antigen_cif": "old.cif", "template_cif": "old.cif",
-        "promera_input": "old_schema.json",
-    }))
+    setup.write_text(
+        json.dumps(
+            {
+                "antigen_cif": "old.cif",
+                "template_cif": "old.cif",
+                "promera_input": "old_schema.json",
+            }
+        )
+    )
     replacement = tmp_path / "new.cif"
     assert referenced_paths(setup, replacement) == {
-        "antigen_cif": str(replacement), "template_cif": str(replacement)
+        "antigen_cif": str(replacement),
+        "template_cif": str(replacement),
     }
-    setup.write_text(json.dumps({
-        "antigen_cif": "old.cif", "template_cif": "separate.cif",
-        "promera_input": "old_schema.json",
-    }))
+    setup.write_text(
+        json.dumps(
+            {
+                "antigen_cif": "old.cif",
+                "template_cif": "separate.cif",
+                "promera_input": "old_schema.json",
+            }
+        )
+    )
     assert referenced_paths(setup, replacement)["template_cif"] == str(
         tmp_path / "separate.cif"
     )

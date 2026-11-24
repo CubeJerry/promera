@@ -1,5 +1,7 @@
 """Guard the native fresh-feature refolding path against generation restraints."""
+
 from __future__ import annotations
+
 from typing import Any
 
 
@@ -13,7 +15,9 @@ class UnconditionedRefoldMixin:
             for key in ("distogram_mask", "is_epitope"):
                 value = feats.get(key)
                 if value is not None and bool(value.any()):
-                    raise RuntimeError(f"validation contamination: nonzero {key} in refold")
+                    raise RuntimeError(
+                        f"validation contamination: nonzero {key} in refold"
+                    )
             return original(feats, *a, **kw)
 
         model.pairformer_forward = unrestrained

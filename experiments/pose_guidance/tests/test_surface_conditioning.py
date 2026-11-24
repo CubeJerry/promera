@@ -4,6 +4,7 @@ Only the runtime chain container is represented by a SimpleNamespace. Placement,
 framework mapping, pair selection and distance-bin encoding are the production
 implementations. No model inference or biological target is involved.
 """
+
 from __future__ import annotations
 
 import copy
@@ -21,8 +22,13 @@ from promera_angles.geometry import scaffold_shape
 PATTERN = "AA<cdrh1>SS<cdrh2>GG<cdrh3>TT"
 SEQUENCE = "AAKSSNGGPTT"
 CODES = {
-    "A": "ALA", "S": "SER", "G": "GLY", "T": "THR",
-    "K": "LYS", "N": "ASN", "P": "PRO",
+    "A": "ALA",
+    "S": "SER",
+    "G": "GLY",
+    "T": "THR",
+    "K": "LYS",
+    "N": "ASN",
+    "P": "PRO",
 }
 
 
@@ -31,14 +37,26 @@ def fixture(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
     coordinates = np.array(
         [
-            [-4, -4, 0], [4, -4, 0], [-4, 4, 0], [3, 3, -5],
-            [-8, 0, -4], [0, -8, -4], [8, 0, -8], [0, 8, -8],
+            [-4, -4, 0],
+            [4, -4, 0],
+            [-4, 4, 0],
+            [3, 3, -5],
+            [-8, 0, -4],
+            [0, -8, -4],
+            [8, 0, -8],
+            [0, 8, -8],
         ],
         dtype=float,
     )
     keys = [
-        ["Left", 1], ["Right", 1], ["Left", 2], ["Right", 2],
-        ["Left", 3], ["Right", 3], ["Left", 4], ["Right", 4],
+        ["Left", 1],
+        ["Right", 1],
+        ["Left", 2],
+        ["Right", 2],
+        ["Left", 3],
+        ["Right", 3],
+        ["Left", 4],
+        ["Right", 4],
     ]
     frame = {
         "origin": [0.0, 0.0, 0.0],
@@ -56,10 +74,17 @@ def fixture(
     )
     binder_ca = np.array(
         [
-            [-3, -3, 12.0], [3, -3, 13.0], [-2, 0, 0.4],
-            [-4, 1, 14.2], [3, 3, 12.5], [0.2, 1, -0.3],
-            [-2, 4, 15.0], [4, 0, 14.6], [2, -0.8, 0.8],
-            [-1, -4, 13.8], [2, 4, 15.7],
+            [-3, -3, 12.0],
+            [3, -3, 13.0],
+            [-2, 0, 0.4],
+            [-4, 1, 14.2],
+            [3, 3, 12.5],
+            [0.2, 1, -0.3],
+            [-2, 4, 15.0],
+            [4, 0, 14.6],
+            [2, -0.8, 0.8],
+            [-1, -4, 13.8],
+            [2, 4, 15.7],
         ],
         dtype=float,
     )
@@ -144,7 +169,9 @@ def test_ordinary_targeted_condition_is_a_complete_feature_noop(
     assert record.get("requested_elevation_deg") is None
 
 
-def test_surface_guide_encodes_exact_symmetric_pairs_with_interleaved_target_chains() -> None:
+def test_surface_guide_encodes_exact_symmetric_pairs_with_interleaved_target_chains() -> (
+    None
+):
     features, plan, starts = fixture()
     before = snapshot(features)
     record = condition(
@@ -159,8 +186,12 @@ def test_surface_guide_encodes_exact_symmetric_pairs_with_interleaved_target_cha
     assert len(record["pairs"]) == 16
     assert record["distance_encoding"] == "promera_51_bins_1_to_50_with_overflow"
     assert np.count_nonzero(features["distogram_mask"] ^ before["distogram_mask"]) == 32
-    np.testing.assert_array_equal(features["distogram_mask"], features["distogram_mask"].T)
-    np.testing.assert_array_equal(features["distogram_emb"], features["distogram_emb"].T)
+    np.testing.assert_array_equal(
+        features["distogram_mask"], features["distogram_mask"].T
+    )
+    np.testing.assert_array_equal(
+        features["distogram_emb"], features["distogram_emb"].T
+    )
     np.testing.assert_array_equal(
         features["distogram_emb"][before["distogram_mask"]],
         before["distogram_emb"][before["distogram_mask"]],
@@ -200,10 +231,14 @@ def test_surface_guide_encodes_exact_symmetric_pairs_with_interleaved_target_cha
     placed = np.asarray(record["scaffold_ca_xyz"])
     fw = np.asarray(record["scaffold_framework_indices"], dtype=int)
     cdr = np.asarray(record["scaffold_cdr_indices"], dtype=int)
-    observed = elevation(placed[fw].mean(0) - placed[cdr].mean(0), plan["frame"]["normal"])
+    observed = elevation(
+        placed[fw].mean(0) - placed[cdr].mean(0), plan["frame"]["normal"]
+    )
     assert 70 <= record["requested_elevation_deg"] <= 90
     assert observed == pytest.approx(record["requested_elevation_deg"], abs=2e-6)
-    assert observed == pytest.approx(record["realized_scaffold_elevation_deg"], abs=2e-6)
+    assert observed == pytest.approx(
+        record["realized_scaffold_elevation_deg"], abs=2e-6
+    )
     np.testing.assert_allclose(placed[cdr].mean(0), [0, 0, 6], atol=1e-9)
 
 
@@ -218,12 +253,18 @@ def test_surface_guide_can_add_features_when_no_native_distogram_is_present() ->
     np.testing.assert_array_equal(features["is_epitope"], epitope)
 
 
-def test_default_and_explicit_legacy_modes_are_identical_and_keep_tilt_semantics() -> None:
+def test_default_and_explicit_legacy_modes_are_identical_and_keep_tilt_semantics() -> (
+    None
+):
     default_features, plan, _ = fixture()
     explicit_features, _, _ = fixture()
     first = condition(default_features, plan, 31, [0, 20], 6.0)
     explicit = condition(
-        explicit_features, plan, 31, [0, 20], 6.0,
+        explicit_features,
+        plan,
+        31,
+        [0, 20],
+        6.0,
         guidance_definition="legacy_placement_ray",
     )
     assert first["guidance_definition"] == "legacy_placement_ray"
@@ -231,16 +272,24 @@ def test_default_and_explicit_legacy_modes_are_identical_and_keep_tilt_semantics
     assert 0 <= first["requested_deg"] <= 20
     for key in ("distogram_mask", "distogram_emb"):
         np.testing.assert_array_equal(default_features[key], explicit_features[key])
-    np.testing.assert_array_equal(first["framework_landmark_xyz"], explicit["framework_landmark_xyz"])
+    np.testing.assert_array_equal(
+        first["framework_landmark_xyz"], explicit["framework_landmark_xyz"]
+    )
     assert first["pairs"] == explicit["pairs"]
     placed = np.asarray(first["scaffold_ca_xyz"])
     shape = plan["shape"]
-    axis = placed[shape["framework_indices"]].mean(0) - placed[shape["cdr_indices"]].mean(0)
+    axis = placed[shape["framework_indices"]].mean(0) - placed[
+        shape["cdr_indices"]
+    ].mean(0)
     old_normal_angle = elevation(axis, plan["legacy_frame"]["normal"])
     new_normal_angle = elevation(axis, plan["frame"]["normal"])
-    assert first["legacy_frame_scaffold_elevation_deg"] == pytest.approx(old_normal_angle, abs=2e-6)
+    assert first["legacy_frame_scaffold_elevation_deg"] == pytest.approx(
+        old_normal_angle, abs=2e-6
+    )
     assert old_normal_angle == pytest.approx(90 - first["requested_deg"], abs=2e-6)
-    assert first["realized_scaffold_elevation_deg"] == pytest.approx(new_normal_angle, abs=2e-6)
+    assert first["realized_scaffold_elevation_deg"] == pytest.approx(
+        new_normal_angle, abs=2e-6
+    )
     assert first["prospective_patch_frame"] == plan["frame"]
 
 
@@ -283,8 +332,12 @@ def test_ordinary_control_does_not_require_a_legacy_frame() -> None:
     assert_feature_noop(before, features)
 
 
-@pytest.mark.parametrize("error", ["missing_epitope", "extra_epitope", "changed_target", "token_count"])
-def test_invalid_runtime_correspondence_fails_before_feature_mutation(error: str) -> None:
+@pytest.mark.parametrize(
+    "error", ["missing_epitope", "extra_epitope", "changed_target", "token_count"]
+)
+def test_invalid_runtime_correspondence_fails_before_feature_mutation(
+    error: str,
+) -> None:
     features, plan, starts = fixture()
     if error == "missing_epitope":
         features["is_epitope"][:] = 0
@@ -300,7 +353,9 @@ def test_invalid_runtime_correspondence_fails_before_feature_mutation(error: str
         expected = "one token per protein residue"
     before = snapshot(features)
     with pytest.raises(ValueError, match=expected):
-        condition(features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation")
+        condition(
+            features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation"
+        )
     assert_feature_noop(before, features)
 
 
@@ -308,7 +363,9 @@ def test_unknown_definition_is_rejected_without_adding_features() -> None:
     features, plan, _ = fixture()
     before = snapshot(features)
     with pytest.raises(ValueError, match="unknown guidance definition"):
-        condition(features, plan, 31, [0, 20], 6.0, guidance_definition="ambiguous_angle")
+        condition(
+            features, plan, 31, [0, 20], 6.0, guidance_definition="ambiguous_angle"
+        )
     assert_feature_noop(before, features)
 
 
@@ -324,7 +381,9 @@ def test_existing_cross_chain_condition_is_not_overwritten_by_an_angle_guide() -
     features["distogram_emb"][binder, target] = 49
     before = snapshot(features)
     with pytest.raises(ValueError, match="overlap"):
-        condition(features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation")
+        condition(
+            features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation"
+        )
     assert_feature_noop(before, features)
 
 
@@ -336,5 +395,7 @@ def test_scaffold_coordinate_verification_precedes_distance_feature_mutation() -
     plan["shape"]["scaffold_ca_local"] = coordinates.tolist()
     before = snapshot(features)
     with pytest.raises(ValueError):
-        condition(features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation")
+        condition(
+            features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation"
+        )
     assert_feature_noop(before, features)
