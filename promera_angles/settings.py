@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from .gfp_pair_ablation import GFP_PAIR_COUNTS
+
 SURFACE_DEFINITION = "surface_elevation_v1"
 
 
@@ -26,6 +28,7 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
         "elevation_interval_deg",
         "legacy_tilt_interval_deg",
         "cdr_lateral_offset_A",
+        "gfp_pair_ablation",
     }
     if set(result) - allowed:
         raise ValueError(
@@ -35,7 +38,7 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
     if definition not in (None, "legacy_placement_ray_v1", SURFACE_DEFINITION):
         raise ValueError(f"unrecognised angle definition: {definition}")
     surface = definition == SURFACE_DEFINITION or "elevation_interval_deg" in result
-    for key in ("enabled", "paired", "three_arms"):
+    for key in ("enabled", "paired", "three_arms", "gfp_pair_ablation"):
         if type(result.get(key, False)) is not bool:
             raise ValueError(f"{key} must be boolean")
     enabled = result.get("enabled", False)
@@ -43,6 +46,10 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("paired or three_arms requires enabled")
     if result.get("paired") and result.get("three_arms"):
         raise ValueError("choose paired or three_arms, not both")
+    if result.get("gfp_pair_ablation") and (
+        not surface or not enabled or result.get("paired") or result.get("three_arms")
+    ):
+        raise ValueError("GFP pair ablation requires its own enabled surface study")
     if result.get("three_arms") and not surface:
         raise ValueError("three_arms requires an explicit elevation_interval_deg")
     if surface:
@@ -93,6 +100,8 @@ def validate_settings(spec: dict[str, Any]) -> dict[str, Any]:
 
 def study_arms(spec: dict[str, Any]) -> list[str]:
     """Return explicit new arms while preserving historical arm identifiers."""
+    if spec.get("gfp_pair_ablation"):
+        return list(GFP_PAIR_COUNTS)
     if spec.get("definition") == SURFACE_DEFINITION:
         if spec.get("three_arms"):
             return ["ordinary", "legacy_tilt", "surface_elevation"]
