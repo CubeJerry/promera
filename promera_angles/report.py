@@ -563,12 +563,14 @@ def experiment_report(
         rf = [row for row in refolds if row["arm"] == arm]
         name = ARM_LABELS.get(arm, arm)
         if plan and plan.get("gfp_pair_ablation"):
-            pair_counts.append([
-                name,
-                _summary(bb, "nominal_guidance_pairs"),
-                _summary(bb, "requested_guidance_pairs"),
-                _summary(bb, "informative_guidance_pairs"),
-            ])
+            pair_counts.append(
+                [
+                    name,
+                    _summary(bb, "nominal_guidance_pairs"),
+                    _summary(bb, "requested_guidance_pairs"),
+                    _summary(bb, "informative_guidance_pairs"),
+                ]
+            )
         patch_measured = sum(
             _finite(row.get("patch_elevation_deg")) is not None for row in bb
         )
@@ -726,9 +728,15 @@ def experiment_report(
         else ""
     )
     pair_note = (
-        '<h2>GFP distance-pair ablation</h2><p>Matched ordinary, 4, 8, 12 and 16 pair arms. All guided arms use nested subsets of the same fully validated 16-pair placement; the shared scaffold, seeds and evaluation band are unchanged. Counts are median [10th, 90th percentile] with measured denominator.</p>'
-        + _table(pair_counts, ["Arm", "Nominal pairs", "Encoded pairs", "Finite-distance pairs"])
-        if pair_counts else ""
+        "<h2>GFP distance-pair ablation</h2><p>Matched ordinary, 4, 8, 12 and 16 pair arms. "
+        "All guided arms use nested subsets of the same fully validated 16-pair placement; "
+        "the shared scaffold, seeds and evaluation band are unchanged. "
+        "Counts are median [10th, 90th percentile] with measured denominator.</p>"
+        + _table(
+            pair_counts, ["Arm", "Nominal pairs", "Encoded pairs", "Finite-distance pairs"]
+        )
+        if pair_counts
+        else ""
     )
     css = """body{margin:0 auto;max-width:1250px;padding:36px 4%;font:15px/1.6 system-ui,sans-serif;color:#20272b;background:#f8fafb}h1,h2{line-height:1.2}h2{margin-top:2.1em}p{max-width:100ch}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px;background:white}th,td{padding:9px;text-align:left;border-bottom:1px solid #d7e0e4}th{background:#eaf0f3}img{width:100%;height:auto}a{color:#335d79}.note{background:#edf2ed;padding:14px 18px;border-radius:5px}code{font-size:.92em}"""
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
