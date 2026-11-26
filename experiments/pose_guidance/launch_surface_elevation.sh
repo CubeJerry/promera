@@ -16,6 +16,7 @@ Runs ordinary targeted, legacy placement-ray tilt, and surface-elevation arms.
   --elevation MIN MAX         Signed surface elevation, default 70 90 degrees
   --legacy-tilt MIN MAX       Legacy placement-ray tilt, default 0 20 degrees
   --three-arms                Explicitly name the default matched three-arm mode
+  --gfp-pair-ablation         GFP-only ordinary/4/8/12/16 pairs, budget per arm
   --backbones N               Total requested parents PER ARM, default 1000
   --replicates R              Matched replicate blocks, default 10
   --seed N                    Initial replicate seed, default 0
@@ -59,6 +60,7 @@ inverse_folder=solublempnn
 recycling=5
 diffusion=200
 preview=false
+gfp_ablation=false
 extra=()
 
 while (( $# )); do
@@ -79,6 +81,7 @@ while (( $# )); do
         --recycling-steps) require_value "$@"; recycling=$2; shift 2 ;;
         --diffusion-steps) require_value "$@"; diffusion=$2; shift 2 ;;
         --three-arms) shift ;;
+        --gfp-pair-ablation) gfp_ablation=true; shift ;;
         --preview) preview=true; shift ;;
         --standoff|--weights|--model-config)
             require_value "$@"; extra+=("$1" "$2"); shift 2 ;;
@@ -128,10 +131,16 @@ while IFS= read -r path; do
 done <<< "$refs"
 bash "$here/container.sh" approach-setups "${setup_args[@]}"
 base="$output/inputs/targeted.json"
-options=(--three-arms --elevation "${elevation[@]}" --legacy-tilt "${legacy_tilt[@]}"
+options=(--elevation "${elevation[@]}"
     --backbones "$backbones" --replicates "$replicates" --seed "$seed" --auto-msa "${extra[@]}")
 echo "Run directory: $output"
-echo "Arms: ordinary targeted | legacy tilt ${legacy_tilt[*]} deg | surface elevation ${elevation[*]} deg"
+if [[ "$gfp_ablation" == true ]]; then
+    options+=(--gfp-pair-ablation)
+    echo "GFP-only ablation: 0 | 4 | 8 | 12 | 16 pairs; $((backbones * 5)) total requested parents"
+else
+    options+=(--three-arms --legacy-tilt "${legacy_tilt[@]}")
+    echo "Arms: ordinary targeted | legacy tilt ${legacy_tilt[*]} deg | surface elevation ${elevation[*]} deg"
+fi
 echo "Requested parents: $backbones per arm, $replicates matched replicates"
 echo "Sequence budget: $sequences per parent; five unrestrained native refolds per sequence"
 if [[ "$preview" == true ]]; then
