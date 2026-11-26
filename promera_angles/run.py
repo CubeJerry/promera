@@ -154,11 +154,13 @@ def split_jobs(root, count, reps, paired, enabled, seed, *, arms=None):
         if arms is None
         else list(arms)
     )
+    known_arms = {"ordinary", "guided", "legacy_tilt", "surface_elevation"} | set(
+        GFP_PAIR_COUNTS
+    )
     if (
         not selected
         or len(set(selected)) != len(selected)
-        or set(selected)
-        - ({"ordinary", "guided", "legacy_tilt", "surface_elevation"} | set(GFP_PAIR_COUNTS))
+        or set(selected) - known_arms
     ):
         raise ValueError("provide distinct recognized study arms")
     root = Path(root)
@@ -624,7 +626,8 @@ def main(argv=None):
         help="ordinary, legacy tilt and surface elevation with equal budgets",
     )
     mode.add_argument(
-        "--gfp-pair-ablation", action="store_true",
+        "--gfp-pair-ablation",
+        action="store_true",
         help="GFP-only benchmark: matched ordinary, 4, 8, 12 and 16 pair arms",
     )
     p.add_argument(
