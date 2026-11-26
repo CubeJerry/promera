@@ -774,6 +774,9 @@ def analyse(
                         "ordinary": "ordinary",
                         "surface_elevation": "surface_elevation",
                     }.get(job["arm"], "legacy_placement_ray"),
+                    nominal_guidance_pairs=record.get("nominal_guidance_pairs"),
+                    requested_guidance_pairs=record.get("requested_guidance_pairs"),
+                    informative_guidance_pairs=record.get("informative_guidance_pairs"),
                     requested_elevation_deg=finite_number(requested),
                     realized_scaffold_elevation_deg=finite_number(
                         record.get("realized_scaffold_elevation_deg")
