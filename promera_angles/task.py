@@ -13,6 +13,7 @@ from promera.inference.design import Design, _sample_dir
 
 from .batches import accepted_batch
 from .conditioning import condition
+from .gfp_pair_ablation import validate_gfp_plan
 from .refold import UnconditionedRefoldMixin
 
 
@@ -24,6 +25,8 @@ class TargetedDesign(UnconditionedRefoldMixin, Design):
         if digest(self.spec.plan) != self.spec.sha256:
             raise ValueError("angular plan digest changed")
         self.plan = json.loads(Path(self.spec.plan).read_text())
+        if self.spec.get("gfp_pair_arm") is not None:
+            validate_gfp_plan(self.plan)
         if (
             cfg.binder.framework != self.plan["framework"]
             or cfg.binder.chain != self.plan["binder_chain"]
@@ -51,6 +54,7 @@ class TargetedDesign(UnconditionedRefoldMixin, Design):
                 "guidance_definition", "legacy_placement_ray"
             ),
             cdr_lateral_offset=self.spec.get("cdr_lateral_offset", [0, 0]),
+            gfp_pair_arm=self.spec.get("gfp_pair_arm"),
         )
         return feats
 
