@@ -1,7 +1,7 @@
 """Fixed, single-protein GFP geometry benchmark (UniProt P42212)."""
 
-from difflib import SequenceMatcher
 import json
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
