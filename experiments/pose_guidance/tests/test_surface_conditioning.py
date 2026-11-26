@@ -399,3 +399,48 @@ def test_scaffold_coordinate_verification_precedes_distance_feature_mutation() -
             features, plan, 31, [70, 90], 6.0, guidance_definition="surface_elevation"
         )
     assert_feature_noop(before, features)
+
+
+def test_gfp_ablation_is_nested_without_altering_native_features() -> None:
+    # Exercise the feature boundary on invented coordinates; the study entry
+    # point separately checks the full GFP sequence.
+    reference, plan, _ = fixture()
+    plan["gfp_pair_ablation"] = True
+    full = condition(
+        reference,
+        plan,
+        31,
+        [70, 90],
+        6.0,
+        guidance_definition="surface_elevation",
+        gfp_pair_arm="gfp_pairs_16",
+    )
+    for count in (0, 4, 8, 12, 16):
+        features, _, _ = fixture()
+        before = snapshot(features)
+        arm = f"gfp_pairs_{count:02}" if count else "ordinary"
+        record = condition(
+            features,
+            plan,
+            31,
+            [70, 90] if count else None,
+            6.0,
+            guidance_definition="surface_elevation",
+            gfp_pair_arm=arm,
+        )
+        assert record["requested_guidance_pairs"] == count
+        assert record["nominal_guidance_pairs"] == count
+        added = features["distogram_mask"] ^ before["distogram_mask"]
+        assert added.sum() == 2 * count
+        np.testing.assert_array_equal(
+            features["distogram_emb"][before["distogram_mask"]],
+            before["distogram_emb"][before["distogram_mask"]],
+        )
+        if count:
+            assert record["pairs"] == full["pairs"][:count]
+            assert record["scaffold_ca_xyz"] == full["scaffold_ca_xyz"]
+            np.testing.assert_array_equal(
+                features["distogram_emb"][added], reference["distogram_emb"][added]
+            )
+        else:
+            assert_feature_noop(before, features)
