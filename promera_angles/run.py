@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from experiments.pose_guidance.pose_geometry import digest
 
 from .analysis import analyse, write_json
+from .gfp_pair_ablation import GFP_PAIR_COUNTS, validate_gfp_plan
 from .settings import SURFACE_DEFINITION, study_arms, validate_settings
 from .structures import resolve_target, scaffold_from_cif
 
@@ -70,6 +71,7 @@ def cli_settings(cfg, args):
     surface_cli = (
         args.elevation is not None
         or args.three_arms
+        or getattr(args, "gfp_pair_ablation", False)
         or args.cdr_lateral_offset is not None
     )
     if args.angle is not None and (surface_cli or args.legacy_tilt is not None):
@@ -96,7 +98,9 @@ def cli_settings(cfg, args):
         spec["enabled"] = True
     if args.angle is not None:
         spec.update(enabled=True, interval_deg=args.angle)
-    if args.three_arms:
+    if getattr(args, "gfp_pair_ablation", False):
+        spec.update(gfp_pair_ablation=True, three_arms=False, paired=False)
+    elif args.three_arms:
         spec.update(three_arms=True, paired=False)
     elif args.paired:
         spec.update(paired=True, three_arms=False)
@@ -150,10 +154,13 @@ def split_jobs(root, count, reps, paired, enabled, seed, *, arms=None):
         if arms is None
         else list(arms)
     )
+    known_arms = {"ordinary", "guided", "legacy_tilt", "surface_elevation"} | set(
+        GFP_PAIR_COUNTS
+    )
     if (
         not selected
         or len(set(selected)) != len(selected)
-        or set(selected) - {"ordinary", "guided", "legacy_tilt", "surface_elevation"}
+        or set(selected) - known_arms
     ):
         raise ValueError("provide distinct recognized study arms")
     root = Path(root)
@@ -175,6 +182,9 @@ def split_jobs(root, count, reps, paired, enabled, seed, *, arms=None):
                 )
             )
         offset += size
+    if set(selected) == set(GFP_PAIR_COUNTS):
+        for job in jobs:
+            job["gfp_pair_arm"] = job["arm"]
     return jobs
 
 
@@ -271,7 +281,14 @@ def run_job(root, manifest, index):
             if digest(plan[field]) != plan[sha]:
                 raise ValueError(f"prepared {field} changed before sampling")
         arm = job["arm"]
-        if arm == "surface_elevation":
+        gfp_ablation = manifest["settings"].get("gfp_pair_ablation", False)
+        if gfp_ablation:
+            validate_gfp_plan(plan)
+            if job.get("gfp_pair_arm") != arm or arm not in GFP_PAIR_COUNTS:
+                raise ValueError("invalid GFP pair ablation arm")
+        elif arm.startswith("gfp_pairs_"):
+            raise ValueError("GFP arms require the GFP-only ablation study")
+        if arm == "surface_elevation" or arm.startswith("gfp_pairs_"):
             definition, interval = (
                 "surface_elevation",
                 manifest["elevation_interval_deg"],
@@ -297,6 +314,8 @@ def run_job(root, manifest, index):
                 "cdr_lateral_offset_A", [0.0, 0.0]
             ),
         )
+        if gfp_ablation:
+            trial["gfp_pair_arm"] = arm
         config = dict(
             cfg,
             output=job["output"],
@@ -420,6 +439,9 @@ def execute(
             ),
         )
         raise
+    if spec.get("gfp_pair_ablation"):
+        validate_gfp_plan(plan)
+        plan["gfp_pair_ablation"] = True
     if surface:
         plan.update(
             version=2,
@@ -602,6 +624,11 @@ def main(argv=None):
         "--three-arms",
         action="store_true",
         help="ordinary, legacy tilt and surface elevation with equal budgets",
+    )
+    mode.add_argument(
+        "--gfp-pair-ablation",
+        action="store_true",
+        help="GFP-only benchmark: matched ordinary, 4, 8, 12 and 16 pair arms",
     )
     p.add_argument(
         "--backbones", type=int, help="total per arm, divided across replicates"

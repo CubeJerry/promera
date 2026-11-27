@@ -15,6 +15,7 @@ from experiments.pose_guidance.pose_geometry import (
 )
 
 from .geometry import elevation_placement, placement, signed_elevation
+from .gfp_pair_ablation import GFP_PAIR_COUNTS, retain_gfp_pairs
 
 
 def condition(
@@ -26,6 +27,7 @@ def condition(
     *,
     guidance_definition: str = "legacy_placement_ray",
     cdr_lateral_offset: Any = (0.0, 0.0),
+    gfp_pair_arm: str | None = None,
 ) -> dict[str, Any]:
     """Add native sparse distance pairs after verifying the transformed scaffold."""
     struct = feats["struct"]
@@ -65,7 +67,15 @@ def condition(
         guidance_definition="ordinary" if interval is None else guidance_definition,
         generation_only=True,
     )
+    if gfp_pair_arm is not None:
+        if not plan.get("gfp_pair_ablation") or gfp_pair_arm not in GFP_PAIR_COUNTS:
+            raise ValueError("GFP pair subset requires a prepared GFP benchmark")
+        record["nominal_guidance_pairs"] = GFP_PAIR_COUNTS[gfp_pair_arm]
     if interval is None:
+        if gfp_pair_arm is not None:
+            if GFP_PAIR_COUNTS[gfp_pair_arm] != 0:
+                raise ValueError("only the GFP ordinary control has no interval")
+            record.update(requested_guidance_pairs=0, informative_guidance_pairs=0)
         return record
     if guidance_definition not in ("legacy_placement_ray", "surface_elevation"):
         raise ValueError(f"unknown guidance definition: {guidance_definition}")
@@ -121,6 +131,8 @@ def condition(
         )
     except AnchorClash as exc:
         return rejected(feats, n, record, str(exc))
+    if gfp_pair_arm is not None:
+        pairs = retain_gfp_pairs(bins, mask, pairs, gfp_pair_arm)
     target_tokens = {token(keys[i]): keys[i] for i in marks}
     binder_tokens = {offsets[binder] + fw[i]: fw[i] + 1 for i in shape["fixed_indices"]}
     for pair in pairs:

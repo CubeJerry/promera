@@ -60,7 +60,8 @@ def host_standins(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
                     (root / 'inputs').mkdir()
                     (root / 'inputs/targeted.json').write_text('{}')
             elif '--layout-only' in payload:
-                print(3 * int(payload[payload.index('--replicates') + 1]))
+                arms = 5 if '--gfp-pair-ablation' in payload else 3
+                print(arms * int(payload[payload.index('--replicates') + 1]))
             """))
     apptainer.chmod(0o755)
     scheduler = binaries / "sbatch"
@@ -305,3 +306,29 @@ def test_reference_override_regenerates_schema_without_stale_paths(
     assert referenced_paths(setup, replacement)["template_cif"] == str(
         tmp_path / "separate.cif"
     )
+
+
+def test_gfp_ablation_launcher(
+    tmp_path: Path, host_standins: tuple[dict[str, str], Path, Path]
+) -> None:
+    env, setup, log = host_standins
+    result = invoke(
+        env,
+        setup,
+        tmp_path / "gfp-ablation",
+        "--residues",
+        "A:10",
+        "--gfp-pair-ablation",
+        "--backbones",
+        "200",
+        "--replicates",
+        "10",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "1000 total requested parents" in result.stdout
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    submitted = [row["args"] for row in records if row["kind"] == "submit"]
+    assert "--gfp-pair-ablation" in submitted[0]
+    assert "--three-arms" not in submitted[0]
+    assert "--legacy-tilt" not in submitted[0]
+    assert "--array=0-49%4" in submitted[1]
